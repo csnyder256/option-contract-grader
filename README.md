@@ -75,7 +75,7 @@ Grade bands come from `GRADE_BANDS` in `app/config.py`. The wording below paraph
 
 **The liquidity gate is a hard cap, not a penalty.** If the bid/ask spread exceeds 15% of mid, or open interest is under 50, the composite is clamped to 39.0 (grade F) no matter how good the other six look. The reasoning is in the code: if the quote is that wide, the mid is fiction, so the IV solved from it is fiction, so every downstream number is fiction.
 
-Five human-readable flags can be attached to a contract, all in `app/engine/scoring.py`:
+Six human-readable flags can be attached to a contract, all in `app/engine/scoring.py`:
 
 - `Expires today (0DTE) - extreme gamma risk`
 - `No price (no bid/ask/last)`
@@ -107,7 +107,7 @@ Dependency flow is one-way: frontend to `api.py`, `api.py` to `scanner.py` and `
 | `app/engine/grading.py` | 41 | Score to letter plus meaning, and the `grade_key()` the UI legend reads. |
 | `app/providers/base.py` | 92 | Abstract `OptionsDataProvider` (four required methods) plus `FeedError` and two optional-optimization hooks with working defaults. |
 | `app/providers/cboe.py` | 332 | Pure parser functions plus a thin networked class. OCC symbol parsing, symbol-spelling fallbacks, in-process chain cache. |
-| `app/providers/tradier.py` | 304 | Same split. Batched quotes, scalar-vs-array normalization, client-side rate limiting at 118 requests/minute against a 120 cap. |
+| `app/providers/tradier.py` | 304 | Same pure-parser / client split, but a different retry policy (429 only). Batched quotes, scalar-vs-array normalization, client-side rate limiting at 118 requests/minute against a 120 cap. |
 | `app/scanner.py` | 131 | The shared per-symbol core described above. |
 | `app/market.py` | 373 | Universe loading, the locked background state machine, and `run_market_sweep` as a testable function taking a progress callback and injectable providers. |
 | `app/store.py` | 164 | SQLite: `iv_snapshots` and `underlying_cache`, an in-place `ALTER TABLE` migration, `check_same_thread=False` plus an `RLock` so sweep workers share one connection. |
@@ -130,7 +130,7 @@ Both sit behind the same four-method interface, so a third one is a drop-in. `ap
 
 Robinhood was evaluated and set aside for now. `robin_stocks` issues one request per contract with no published rate limit, so refreshing a single chain means hundreds of requests per second, which is a documented way to get an account blocked. Tradier serves a whole expiration in one call under a 120 requests/minute cap.
 
-Both live providers retry with exponential backoff plus jitter on 403/429/5xx, and raise a typed `FeedError` carrying the symbol so failures get counted and reported instead of silently vanishing.
+The two live providers do not retry identically. CBOE retries with exponential backoff plus jitter on 403/429/5xx and raises a typed `FeedError` carrying the symbol, so failures get counted and reported instead of silently vanishing. Tradier retries on HTTP 429 only, honoring the server's `Retry-After` header when present and falling back to exponential backoff (no jitter) when it is not; every other error status goes straight to `raise_for_status()` and surfaces as `httpx.HTTPStatusError`. Bringing Tradier up to the CBOE contract is listed under "Status and known rough edges" below.
 
 ### HTTP surface
 
@@ -277,7 +277,7 @@ Everything runs offline. No network access, no mocking library, no recorded-cass
 
 Roughly a 1:4 test-to-application line ratio.
 
-**Gaps, named honestly:** there are no HTTP-level tests of the six FastAPI endpoints (no `TestClient`), and no tests of the frontend JavaScript.
+**Gaps, named honestly:** there are no HTTP-level tests of the five FastAPI endpoints (no `TestClient`), and no tests of the frontend JavaScript.
 
 ---
 
@@ -304,10 +304,11 @@ Working and used. The version string in `app/api.py` is `0.2.0`. Honest caveats:
 - **Tradier sandbox is still delayed** and serves no Greeks. Only `TRADIER_ENV=production` on a brokerage account is real-time.
 - **"Top 50 across the market" is bounded by the scan budget.** With `MAX_CHAIN_SCANS` set, it is the top 50 across the most-liquid slice actually scanned. The notes always say which.
 - **Stale copy in two places.** The frontend tab still reads "Market (S&P 500 + ETFs)" (`frontend/index.html:18`) and the `app/market.py` module docstring still says "curated universe," both left over from before the OCC universe landed. The behavior is correct; the labels are behind.
+- **The two providers do not fail the same way.** `cboe.py` retries 403/429/5xx with jittered backoff and raises `FeedError`; `tradier.py` retries 429 only and lets everything else surface as `httpx.HTTPStatusError`. Callers that catch `FeedError` will not catch a Tradier 5xx. Unifying the two is on the roadmap.
 - **Config drift.** `.env.example` ships `MAX_CHAIN_SCANS=1500` while the built-in default in `config.py` is `2000`. The example is the lighter, faster setting.
 - **This is a calculator, not a broker.** It places no orders and connects to no execution venue. A letter grade summarizes seven measurable properties of a contract at a point in time; it is not advice and none of the output should be read as a recommendation.
 
-Roadmap, in rough priority order: `TestClient` coverage of the six endpoints, an American-option pricer (binomial or Bjerksund-Stensland) for the early-exercise cases, and persisting sweep results so a completed board survives a restart.
+Roadmap, in rough priority order: `TestClient` coverage of the five endpoints, an American-option pricer (binomial or Bjerksund-Stensland) for the early-exercise cases, and persisting sweep results so a completed board survives a restart.
 
 ---
 

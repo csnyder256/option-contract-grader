@@ -377,7 +377,7 @@ uvicorn app.api:app --reload
       <li>Black-Scholes-Merton is European; US equity options are American. Early exercise is not modeled, so the edges of the board are approximations.</li>
       <li>The free CBOE and Yahoo endpoints are public but undocumented. That is why retry, backoff, and failure counting exist.</li>
       <li>"Top 50 across the market" is bounded by the scan budget. The notes always say which slice was actually covered.</li>
-      <li>No HTTP-level tests of the six endpoints, and no frontend JavaScript tests.</li>
+      <li>No HTTP-level tests of the five endpoints, and no frontend JavaScript tests.</li>
       <li>This is a calculator, not a broker. It places no orders and none of its output is advice.</li>
     </ul>
     <p class="prose" style="margin-top:1.5rem">The full list, including two known stale UI labels and a config drift between <code>.env.example</code> and the built-in default, is in the <a href="https://github.com/csnyder256/option-contract-grader#status-and-known-rough-edges">repository README</a>.</p>

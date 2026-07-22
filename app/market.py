@@ -1,7 +1,7 @@
 """Market-wide screener: sweep a curated universe (S&P 500 + ETFs) and return the
 Top N contracts across the market.
 
-Pipeline (see the plan's Addendum 2):
+Pipeline (the README's "The market sweep" section documents the same four stages):
   1. Cheap pass: price + realized vol per name (one Yahoo chart call, cached daily).
   2. Prune to names whose price is inside the requested band.
   3. Expensive pass: fetch + score chains ONLY for in-band names (bounded concurrency).
