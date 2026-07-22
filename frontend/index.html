@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Options Finder</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Options Finder</h1>
+    <p class="tagline">Type a ticker or sweep the market, get ranked &amp; graded contracts. The grade is the expert &mdash; you just read it.</p>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="single" type="button">Single Ticker</button>
+    <button class="tab" data-tab="market" type="button">Market (S&amp;P 500 + ETFs)</button>
+  </nav>
+
+  <!-- ============ SINGLE TICKER ============ -->
+  <section id="panel-single" class="panel active">
+    <form id="scan-form">
+      <div class="field">
+        <label for="ticker">Ticker</label>
+        <input id="ticker" name="ticker" type="text" placeholder="AAPL" autocomplete="off" required />
+      </div>
+      <div class="field">
+        <label for="side">Type</label>
+        <select id="side" name="side">
+          <option value="both">Calls &amp; Puts</option>
+          <option value="calls">Calls only</option>
+          <option value="puts">Puts only</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="exp_from">Expires from <span class="opt">(optional)</span></label>
+        <input id="exp_from" name="expiration_from" type="date" />
+      </div>
+      <div class="field">
+        <label for="exp_to">Expires to <span class="opt">(optional)</span></label>
+        <input id="exp_to" name="expiration_to" type="date" />
+      </div>
+      <div class="field">
+        <label for="prem_min">Min premium <span class="opt">(per share)</span></label>
+        <input id="prem_min" name="premium_min" type="number" step="0.01" min="0" placeholder="0.20" />
+      </div>
+      <div class="field">
+        <label for="prem_max">Max premium <span class="opt">(per share)</span></label>
+        <input id="prem_max" name="premium_max" type="number" step="0.01" min="0" placeholder="5.00" />
+      </div>
+      <p class="helper">Premium is <strong>per share</strong>: a <strong>$0.80</strong> option costs <strong>$80</strong> to buy one contract (&times;100).</p>
+      <button type="submit" id="scan-btn">Scan</button>
+    </form>
+    <div id="status" class="status"></div>
+    <div id="meta" class="meta"></div>
+    <div id="results"></div>
+  </section>
+
+  <!-- ============ MARKET ============ -->
+  <section id="panel-market" class="panel">
+    <form id="market-form">
+      <div class="field">
+        <label for="m_price_min">Stock price min <span class="opt">($/share)</span></label>
+        <input id="m_price_min" name="price_min" type="number" step="0.01" min="0" placeholder="20" />
+      </div>
+      <div class="field">
+        <label for="m_price_max">Stock price max <span class="opt">($/share)</span></label>
+        <input id="m_price_max" name="price_max" type="number" step="0.01" min="0" placeholder="120" />
+      </div>
+      <div class="field">
+        <label for="m_side">Type</label>
+        <select id="m_side" name="side">
+          <option value="both">Calls &amp; Puts</option>
+          <option value="calls">Calls only</option>
+          <option value="puts">Puts only</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="m_prem_min">Min premium <span class="opt">(per share)</span></label>
+        <input id="m_prem_min" name="premium_min" type="number" step="0.01" min="0" placeholder="0.20" />
+      </div>
+      <div class="field">
+        <label for="m_prem_max">Max premium <span class="opt">(per share)</span></label>
+        <input id="m_prem_max" name="premium_max" type="number" step="0.01" min="0" placeholder="5.00" />
+      </div>
+      <div class="field">
+        <label for="m_dte_from">DTE min <span class="opt">(optional)</span></label>
+        <input id="m_dte_from" name="dte_from" type="number" step="1" min="0" placeholder="14" />
+      </div>
+      <div class="field">
+        <label for="m_dte_to">DTE max <span class="opt">(optional)</span></label>
+        <input id="m_dte_to" name="dte_to" type="number" step="1" min="0" placeholder="60" />
+      </div>
+      <p class="helper">Stock-price band picks which names get scanned (skips the rest); premium band filters the contracts. A full sweep takes ~1&ndash;3 min the first time.</p>
+      <button type="submit" id="market-btn">Scan market</button>
+    </form>
+
+    <div id="market-status" class="status"></div>
+    <div id="market-progress" class="progress" hidden><div class="bar"></div></div>
+    <div id="market-meta" class="meta"></div>
+    <div class="sortbar" id="market-sortbar" hidden>
+      Sort by:
+      <select id="market-sort">
+        <option value="overall">Overall grade</option>
+        <option value="value">Value (Price Edge)</option>
+        <option value="odds">Odds of Profit</option>
+        <option value="move">Move Needed</option>
+        <option value="liquidity">Liquidity</option>
+        <option value="volatility">Volatility Value</option>
+        <option value="decay">Time-Decay Risk</option>
+        <option value="leverage">Leverage &amp; Risk</option>
+      </select>
+    </div>
+    <div id="market-results"></div>
+  </section>
+
+  <details id="legend" class="legend">
+    <summary>What do the grades mean?</summary>
+    <div id="legend-body"></div>
+  </details>
+
+  <script src="app.js"></script>
+</body>
+</html>

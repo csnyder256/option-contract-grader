@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>option-contract-grader</title>
+<meta name="description" content="Every option contract in the chain, scored 0-100 and graded A through F.">
+<style>
+  :root {
+    --bg: #fbfaf7;
+    --panel: #ffffff;
+    --ink: #17191c;
+    --ink-soft: #4d5359;
+    --ink-faint: #838a91;
+    --rule: #e3ded4;
+    --accent: #a8641b;
+    --accent-soft: #f3e7d6;
+    --mono-bg: #f4f1ea;
+    --shadow: 0 1px 2px rgba(20,18,14,.05), 0 8px 24px rgba(20,18,14,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101113;
+      --panel: #17191c;
+      --ink: #eceae5;
+      --ink-soft: #a8adb3;
+      --ink-faint: #71777d;
+      --rule: #2a2d31;
+      --accent: #e2a45c;
+      --accent-soft: #2a2118;
+      --mono-bg: #1d2024;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 28px rgba(0,0,0,.35);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    width: 100%;
+    max-width: 68rem;
+    margin: 0 auto;
+    padding: 0 clamp(1.1rem, 4vw, 3rem);
+  }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid transparent; }
+  a:hover { border-bottom-color: var(--accent); }
+  code, pre, .mono {
+    font-family: ui-monospace, "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  code { font-size: .875em; background: var(--mono-bg); padding: .12em .38em; border-radius: 4px; }
+  pre {
+    background: var(--mono-bg);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    font-size: .84rem;
+    line-height: 1.7;
+    margin: 0;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  /* ---------- masthead ---------- */
+  header.top {
+    border-bottom: 1px solid var(--rule);
+    padding: clamp(3rem, 8vw, 6rem) 0 clamp(2.5rem, 6vw, 4rem);
+  }
+  .eyebrow {
+    font-size: .72rem;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 1.4rem;
+  }
+  h1 {
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    font-size: clamp(1.75rem, 6vw, 3.1rem);
+    line-height: 1.05;
+    letter-spacing: -.02em;
+    margin: 0 0 1rem;
+    word-break: break-word;
+  }
+  .tagline {
+    font-size: clamp(1.1rem, 3.2vw, 1.5rem);
+    line-height: 1.35;
+    font-weight: 600;
+    max-width: 30ch;
+    margin: 0 0 1.6rem;
+  }
+  .tagline em { color: var(--accent); font-style: normal; }
+  .lede { color: var(--ink-soft); max-width: 62ch; margin: 0 0 1rem; }
+
+  .cta-row { display: flex; flex-wrap: wrap; gap: .7rem; margin-top: 2rem; }
+  .btn {
+    display: inline-block;
+    padding: .62rem 1.15rem;
+    border-radius: 8px;
+    font-size: .92rem;
+    font-weight: 600;
+    border: 1px solid var(--rule);
+    color: var(--ink);
+    background: var(--panel);
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fffdf9;
+  }
+  .btn.primary:hover { filter: brightness(1.08); }
+
+  /* ---------- grade strip ---------- */
+  .grades {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: .5rem;
+    margin: 2.6rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  .grades li {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: .75rem .4rem .65rem;
+    text-align: center;
+  }
+  .grades .g {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: clamp(1.3rem, 5vw, 1.9rem);
+    font-weight: 700;
+    line-height: 1;
+    display: block;
+  }
+  .grades .r {
+    font-size: .68rem;
+    letter-spacing: .06em;
+    color: var(--ink-faint);
+    display: block;
+    margin-top: .35rem;
+  }
+  .grades li:nth-child(1) .g { color: var(--accent); }
+
+  /* ---------- sections ---------- */
+  section { padding: clamp(2.8rem, 7vw, 4.6rem) 0; border-bottom: 1px solid var(--rule); }
+  h2 {
+    font-size: .74rem;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 600;
+    margin: 0 0 1.8rem;
+  }
+  h3 { font-size: 1.06rem; margin: 0 0 .45rem; letter-spacing: -.01em; }
+  p { margin: 0 0 1rem; }
+  .prose { max-width: 66ch; color: var(--ink-soft); }
+  .prose strong { color: var(--ink); }
+
+  .cards { display: grid; gap: 1rem; grid-template-columns: 1fr; }
+  @media (min-width: 720px) { .cards { grid-template-columns: repeat(3, 1fr); } }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    padding: 1.35rem 1.4rem;
+    box-shadow: var(--shadow);
+  }
+  .card .n {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: .74rem;
+    color: var(--accent);
+    letter-spacing: .1em;
+    display: block;
+    margin-bottom: .8rem;
+  }
+  .card p { color: var(--ink-soft); font-size: .93rem; margin: 0; }
+
+  .scroller { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { border-collapse: collapse; width: 100%; min-width: 30rem; font-size: .9rem; }
+  th, td { text-align: left; padding: .6rem .8rem; border-bottom: 1px solid var(--rule); }
+  th {
+    font-size: .68rem; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--ink-faint); font-weight: 600;
+  }
+  td.num, th.num { text-align: right; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  tbody tr:last-child td { border-bottom: none; }
+
+  .split { display: grid; gap: 2rem; grid-template-columns: 1fr; }
+  @media (min-width: 860px) { .split { grid-template-columns: 1fr 1fr; gap: 3rem; } }
+
+  ul.tight { margin: 0; padding-left: 1.1rem; color: var(--ink-soft); }
+  ul.tight li { margin-bottom: .5rem; }
+
+  .note {
+    border-left: 2px solid var(--accent);
+    padding: .1rem 0 .1rem 1.1rem;
+    color: var(--ink-soft);
+    max-width: 62ch;
+  }
+
+  footer {
+    padding: 2.6rem 0 3.6rem;
+    color: var(--ink-faint);
+    font-size: .86rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: .4rem 1.4rem;
+    justify-content: space-between;
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <p class="eyebrow">Deterministic options screener</p>
+    <h1>option-contract-grader</h1>
+    <p class="tagline">Every option contract in the chain, scored <em>0-100</em> and graded <em>A</em> through <em>F</em>.</p>
+    <p class="lede">A local FastAPI app that pulls real US equity option chains, re-derives implied volatility and the Greeks itself with Black-Scholes-Merton, and hands back every contract with a score and a letter. Run it on one ticker, or sweep the whole optionable universe (roughly 6,000 names) for a ranked board.</p>
+    <p class="lede">This is the calculating companion to <a href="https://github.com/csnyder256/shadow-options-trading-lab">shadow-options-trading-lab</a>. The lab runs strategies. This repo does the option math and the scoring. They are separate programs by design: no shared code, no shared database.</p>
+
+    <div class="cta-row">
+      <a class="btn primary" href="https://github.com/csnyder256/option-contract-grader">View on GitHub</a>
+      <a class="btn" href="https://github.com/csnyder256/option-contract-grader#quickstart">Quickstart</a>
+      <a class="btn" href="https://github.com/csnyder256/shadow-options-trading-lab">The trading lab</a>
+    </div>
+
+    <ul class="grades">
+      <li><span class="g">A</span><span class="r">90-100</span></li>
+      <li><span class="g">B</span><span class="r">75-89</span></li>
+      <li><span class="g">C</span><span class="r">60-74</span></li>
+      <li><span class="g">D</span><span class="r">40-59</span></li>
+      <li><span class="g">F</span><span class="r">0-39</span></li>
+    </ul>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2>What it does</h2>
+    <div class="cards">
+      <div class="card">
+        <span class="n">01 / FETCH</span>
+        <h3>Real chains</h3>
+        <p>Option chains from CBOE's free delayed feed by default, or Tradier for real-time. Both sit behind one four-method provider interface.</p>
+      </div>
+      <div class="card">
+        <span class="n">02 / SOLVE</span>
+        <h3>Its own IV</h3>
+        <p>The vendor IV and Greeks are discarded. Sigma is inverted out of each contract's own mid price, and all five Greeks come from that sigma.</p>
+      </div>
+      <div class="card">
+        <span class="n">03 / SCORE</span>
+        <h3>Seven dimensions</h3>
+        <p>Value, odds, liquidity, volatility value, move needed, decay, leverage. One weighted composite, one letter, one plain-English reason per sub-score.</p>
+      </div>
+    </div>
+    <p class="prose" style="margin-top:1.6rem">Scope is deliberately narrow: long single-leg positions, buying calls and puts. No spreads, no selling premium. Scoring is deterministic, so the same chain in gives the same grades out. Nothing is sampled, fitted, or trained.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Why it does its own math</h2>
+    <div class="split">
+      <div>
+        <p class="prose">The vendor's numbers are not the numbers you are trading against. Tradier's IV and Greeks come from a third-party model refreshed roughly hourly; CBOE's are a delayed snapshot. Both drift against the mid you would actually pay.</p>
+        <p class="prose">So the solver in <code>app/engine/blackscholes.py</code> re-derives sigma per contract, and it is not a naive Newton loop:</p>
+        <ul class="tight">
+          <li>No-arbitrage bounds are checked first. Outside them there is no valid sigma, and it returns <code>None</code>.</li>
+          <li>It seeds with the Brenner-Subrahmanyam ATM approximation, not a blind 0.20.</li>
+          <li>Newton-Raphson on Vega, falling back to a 200-iteration bisection over <code>[1e-4, 5.0]</code> the moment Vega drops under <code>1e-10</code>.</li>
+          <li>No sign change in the bracket means <code>None</code>, not a spurious root.</li>
+        </ul>
+        <p class="prose" style="margin-top:1rem">When the solve fails, the contract is neither dropped nor faked. It falls back to the vendor IV and carries a visible flag saying so.</p>
+      </div>
+      <div>
+        <p class="prose"><strong>Greeks use chain-quote conventions.</strong> Theta per calendar day (divided by 365), vega and rho per one percentage point (divided by 100). Both are pinned by tests, because a factor-of-365 mismatch produces plausible-looking nonsense.</p>
+        <p class="prose"><strong>Realized volatility is Yang-Zhang</strong>, combining the overnight jump, the open-to-close move, and a Rogers-Satchell drift-independent term, with a close-to-close fallback when the estimator returns a non-positive variance. The highest-weighted sub-score prices the contract at realized vol, so a bad HV estimate moves the top of the board.</p>
+        <p class="note"><strong>The liquidity gate is a hard cap, not a penalty.</strong> Spread over 15% of mid, or open interest under 50, clamps the composite to 39.0 and grade F no matter how good the other six look. If the quote is that wide, the mid is fiction, so everything downstream is fiction.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>The composite</h2>
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr><th>Sub-score</th><th class="num">Weight</th><th>What it measures</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Value (Price Edge)</td><td class="num">30</td><td>BSM fair value at <em>realized</em> vol vs. the market mid</td></tr>
+          <tr><td>Odds of Profit</td><td class="num">20</td><td><code>N(d2)</code> at the break-even price</td></tr>
+          <tr><td>Liquidity</td><td class="num">20</td><td>0.6 spread + 0.25 log-scaled OI + 0.15 log-scaled volume</td></tr>
+          <tr><td>Volatility Value</td><td class="num">12</td><td>IV/HV ratio, blended 60/40 with inverted IV rank when it exists</td></tr>
+          <tr><td>Move Needed</td><td class="num">10</td><td>Break-even move over the 1-standard-deviation move</td></tr>
+          <tr><td>Time-Decay Risk</td><td class="num">4</td><td>Theta as a fraction of premium per day, halved under 7 DTE</td></tr>
+          <tr><td>Leverage &amp; Risk</td><td class="num">4</td><td>Gaussian bump centered on absolute delta 0.45</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="prose" style="margin-top:1.4rem">Weights and grade bands live in <code>app/config.py</code>, alongside 25 environment-variable knobs. No threshold is hardcoded in logic.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>The market sweep</h2>
+    <p class="prose">Sweeping 6,000 names is a cost-reduction funnel, not a loop. A cached price pre-pass prunes the universe before a single option chain is downloaded.</p>
+    <div class="scroller" style="margin:1.4rem 0">
+<pre><code>universe (liquidity-ordered, ~6,000 names)
+        |
+   [1] price + HV pre-pass
+        |   SQLite TTL cache first (default 12h)
+        |   then batched quotes (Tradier, 100/request)
+        |   or a bounded thread pool of Yahoo chart calls
+        v
+   [2] prune to the requested stock-price band
+        v
+   [3] fetch + score chains for survivors only
+        |   &lt;= 300 in-band names + a token -&gt; real-time Tradier
+        |   otherwise                      -&gt; CBOE bulk delayed
+        v
+   [4] global rank, then a per-underlying board cap (default 2)
+        v
+       Top N + notes explaining exactly what was covered</code></pre>
+    </div>
+    <div class="split">
+      <div>
+        <h3>Nothing fails silently</h3>
+        <p class="prose">The sweep tracks price and chain failures separately and emits notes: names priced versus attempted, budget truncation, chain-fetch failures with example symbols, the routing mode actually used, and a data-as-of timestamp. Two tests assert those notes say what they claim.</p>
+      </div>
+      <div>
+        <h3>IV rank bootstrapped from nothing</h3>
+        <p class="prose">Neither feed serves historical implied volatility, so each scan snapshots the ATM IV into SQLite, one row per symbol per day. Below 10 observations, rank returns nothing and the API says so instead of guessing.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Quickstart</h2>
+    <p class="prose">No API key. The default CBOE provider runs on the public delayed feed with zero credentials. Install into a virtualenv.</p>
+    <div class="scroller" style="margin:1.4rem 0">
+<pre><code>git clone https://github.com/csnyder256/option-contract-grader
+cd option-contract-grader
+
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+uvicorn app.api:app --reload
+# open http://localhost:8000</code></pre>
+    </div>
+    <p class="prose">Six dependencies total: five runtime plus pytest. The frontend is vanilla JavaScript with no build step and no packages. On Windows, <code>setup.bat</code> and <code>start.bat</code> do the same thing without a terminal.</p>
+    <p class="prose"><strong>Tests:</strong> 40 test functions across five modules, 49 cases, all fully offline with no network and no mocking library. Verified in a clean virtualenv on Python 3.14: 49 passed in 2.14s.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Honest caveats</h2>
+    <ul class="tight" style="max-width:66ch">
+      <li>No packaging and no CI. No pyproject, no lockfile, no workflow. The test number is one run locally.</li>
+      <li>Black-Scholes-Merton is European; US equity options are American. Early exercise is not modeled, so the edges of the board are approximations.</li>
+      <li>The free CBOE and Yahoo endpoints are public but undocumented. That is why retry, backoff, and failure counting exist.</li>
+      <li>"Top 50 across the market" is bounded by the scan budget. The notes always say which slice was actually covered.</li>
+      <li>No HTTP-level tests of the six endpoints, and no frontend JavaScript tests.</li>
+      <li>This is a calculator, not a broker. It places no orders and none of its output is advice.</li>
+    </ul>
+    <p class="prose" style="margin-top:1.5rem">The full list, including two known stale UI labels and a config drift between <code>.env.example</code> and the built-in default, is in the <a href="https://github.com/csnyder256/option-contract-grader#status-and-known-rough-edges">repository README</a>.</p>
+  </div>
+</section>
+
+<div class="wrap">
+  <footer>
+    <span>Built by Cade &middot; <a href="https://github.com/csnyder256">github.com/csnyder256</a></span>
+    <span>MIT licensed &middot; <a href="https://github.com/csnyder256/option-contract-grader">option-contract-grader</a></span>
+  </footer>
+</div>
+
+</body>
+</html>

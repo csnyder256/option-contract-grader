@@ -1,0 +1,54 @@
+# --- Secrets / credentials ---
+.env
+.env.local
+.env.*.local
+*.local.yaml
+*.local.json
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+
+# --- Python ---
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+out/
+coverage/
+
+# --- Runtime state / local data ---
+data/*
+!data/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+*.log
+
+# --- Generated universe (regenerate with scripts/update_universe.py) ---
+app/universe/optionable.txt
+
+# --- Node / JS tooling (the frontend is dependency-free, but just in case) ---
+node_modules/
+.next/
+*.tsbuildinfo
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
