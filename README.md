@@ -2,6 +2,7 @@
 
 **Every option contract in the chain, scored 0-100 and graded A through F.**
 
+[![ci](https://github.com/csnyder256/option-contract-grader/actions/workflows/ci.yml/badge.svg)](https://github.com/csnyder256/option-contract-grader/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
 ![Tests](https://img.shields.io/badge/tests-49%20passing%2C%20offline-brightgreen?style=flat-square)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)
