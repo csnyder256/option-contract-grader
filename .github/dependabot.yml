@@ -1,11 +1,26 @@
+# Keep pip deps and CI actions patched automatically. CI gates every
+# Dependabot PR before merge.
+#
+# requirements.txt uses open floors (>=), so pip already installs the
+# newest compatible release. `increase-if-necessary` stops Dependabot from
+# raising those floors on every release, which only narrows what the app
+# can share an environment with; it still opens a PR when a new release
+# falls outside the allowed range. Routine bumps are grouped so a normal
+# week is one PR per ecosystem, not one per package.
 version: 2
 updates:
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
+    versioning-strategy: increase-if-necessary
+    groups:
+      pip-minor-and-patch:
+        update-types: ["minor", "patch"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      github-actions:
+        patterns: ["*"]
