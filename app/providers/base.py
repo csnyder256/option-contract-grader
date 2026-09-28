@@ -110,9 +110,10 @@ _SIDE_ALIASES = {
 def normalize_side(side: object) -> str:
     """Return the canonical side ('calls' | 'puts' | 'both').
 
-    Raises UnknownSide for anything else, including None. Blank/None is treated
-    as the documented default ('both') only when the caller omitted it entirely;
-    callers that want that default should pass 'both' explicitly.
+    Accepts call/put/all aliases and case-insensitive spellings. None and blank
+    strings retain the helper's existing 'both' default; other unknown values
+    raise UnknownSide. HTTP request fields are strings, so JSON null is rejected
+    by request validation before this helper runs.
     """
     if side is None or (isinstance(side, str) and side.strip() == ""):
         return "both"

@@ -144,7 +144,7 @@ The two live providers do not retry identically. CBOE retries with exponential b
 | GET | `/key` | Grade legend and sub-score labels |
 | GET | `/` | The static frontend |
 
-`side` accepts `calls`, `puts`, or `both` (plus the `call`/`put`/`all` aliases). Anything else is a `422` — an unknown side is never silently widened to both sides.
+`side` accepts `calls`, `puts`, or `both` (plus the `call`/`put`/`all` aliases and case-insensitive spellings). An omitted or blank string retains the `both` default. Other unknown strings and JSON `null` are a `422` — an unknown side is never silently widened to both sides.
 
 ```bash
 curl -s localhost:8000/scan \
@@ -307,7 +307,7 @@ Working and used. The version string in `app/api.py` is `0.2.0`. Honest caveats:
 - **The free feeds are unofficial.** The CBOE delayed-quote CDN and the Yahoo chart endpoint are public but undocumented, and they can change or start rate-limiting without notice. That is why the retry, the backoff, and the failure counting exist.
 - **Tradier sandbox is still delayed** and serves no Greeks. Only `TRADIER_ENV=production` on a brokerage account is real-time.
 - **"Top 50 across the market" is bounded by the scan budget.** With `MAX_CHAIN_SCANS` set, it is the top 50 across the most-liquid slice actually scanned. The notes always say which.
-- **An unknown `side` used to widen to "both".** `side` is now validated at the API boundary (`calls`/`put`/`all` aliases normalize; anything else is a 422) so a typo can no longer return the whole board as if it were the request. The provider-level `filter_side` raises `UnknownSide` instead of defaulting to "both".
+- **An unknown `side` used to widen to "both".** `side` is now validated at the API boundary (`calls`/`put`/`all` aliases normalize and blank strings retain the `both` default; other unknown strings are a 422) so a typo can no longer return the whole board as if it were the request. The provider-level `filter_side` raises `UnknownSide` instead of defaulting to "both".
 - **The two providers do not fail the same way.** `cboe.py` retries 403/429/5xx with jittered backoff and raises `FeedError`; `tradier.py` retries 429 only and lets everything else surface as `httpx.HTTPStatusError`. Callers that catch `FeedError` will not catch a Tradier 5xx. Unifying the two is on the roadmap.
 - **Config drift.** `.env.example` ships `MAX_CHAIN_SCANS=1500` while the built-in default in `config.py` is `2000`. The example is the lighter, faster setting.
 - **This is a calculator, not a broker.** It places no orders and connects to no execution venue. A letter grade summarizes seven measurable properties of a contract at a point in time; it is not advice and none of the output should be read as a recommendation.
