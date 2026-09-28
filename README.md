@@ -4,7 +4,7 @@
 
 [![ci](https://github.com/csnyder256/option-contract-grader/actions/workflows/ci.yml/badge.svg)](https://github.com/csnyder256/option-contract-grader/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
-![Tests](https://img.shields.io/badge/tests-49%20passing%2C%20offline-brightgreen?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-73%20passing%2C%20offline-brightgreen?style=flat-square)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white)
 ![Frontend](https://img.shields.io/badge/frontend-no%20build%20step-orange?style=flat-square)
@@ -99,23 +99,23 @@ Dependency flow is one-way: frontend to `api.py`, `api.py` to `scanner.py` and `
 
 | File | LOC | Role |
 |---|---:|---|
-| `app/api.py` | 262 | FastAPI surface. Providers and the store are lazily-created singletons, so importing the app never requires a token. `StaticFiles` is mounted last so API routes win. |
+| `app/api.py` | 335 | FastAPI surface. Providers and the store are lazily-created singletons, so importing the app never requires a token. `StaticFiles` is mounted last so API routes win. |
 | `app/config.py` | 153 | One dataclass, exactly 25 env-var knobs: weights, grade bands, liquidity thresholds, sweep tuning. No threshold is hardcoded in logic. |
-| `app/models.py` | 142 | Dataclasses. `Contract` derives `mid` / `has_two_sided_market` / `spread_pct`, falling back to last trade on a one-sided market. |
+| `app/models.py` | 150 | Dataclasses. `Contract` derives `mid` / `has_two_sided_market` / `spread_pct`, falling back to last trade on a one-sided market. |
 | `app/engine/blackscholes.py` | 215 | BSM with continuous dividend yield `q`: `bs_price`, `greeks`, `implied_vol`, `prob_itm`. |
 | `app/engine/volatility.py` | 150 | Close-to-close and Yang-Zhang realized vol, IV/HV ratio, `iv_rank`, `iv_percentile`. |
 | `app/engine/scoring.py` | 270 | The seven sub-scores, the composite, the liquidity gate, the English strings. |
 | `app/engine/grading.py` | 41 | Score to letter plus meaning, and the `grade_key()` the UI legend reads. |
-| `app/providers/base.py` | 92 | Abstract `OptionsDataProvider` (four required methods) plus `FeedError` and two optional-optimization hooks with working defaults. |
-| `app/providers/cboe.py` | 332 | Pure parser functions plus a thin networked class. OCC symbol parsing, symbol-spelling fallbacks, in-process chain cache. |
-| `app/providers/tradier.py` | 304 | Same pure-parser / client split, but a different retry policy (429 only). Batched quotes, scalar-vs-array normalization, client-side rate limiting at 118 requests/minute against a 120 cap. |
+| `app/providers/base.py` | 114 | Abstract `OptionsDataProvider` (four required methods) plus `FeedError`, the shared `check_status` HTTP contract, and two optional-optimization hooks with working defaults. |
+| `app/providers/cboe.py` | 363 | Pure parser functions plus a thin networked class. OCC symbol parsing, symbol-spelling fallbacks, in-process chain cache, and a non-200 / non-JSON guard on every fetch. |
+| `app/providers/tradier.py` | 349 | Same pure-parser / client split, but a different retry policy (429 only). Batched quotes, scalar-vs-array normalization, client-side rate limiting at 118 requests/minute against a 120 cap, and the same `FeedError` contract as CBOE. |
 | `app/scanner.py` | 131 | The shared per-symbol core described above. |
 | `app/market.py` | 373 | Universe loading, the locked background state machine, and `run_market_sweep` as a testable function taking a progress callback and injectable providers. |
-| `app/store.py` | 164 | SQLite: `iv_snapshots` and `underlying_cache`, an in-place `ALTER TABLE` migration, `check_same_thread=False` plus an `RLock` so sweep workers share one connection. |
+| `app/store.py` | 175 | SQLite: `iv_snapshots` and `underlying_cache`, an in-place `ALTER TABLE` migration, `check_same_thread=False` plus an `RLock` so sweep workers share one connection, and a future-date guard on IV history reads. |
 | `scripts/update_universe.py` | 172 | Regenerates the optionable universe from the OCC directory, with fallbacks. |
 | `frontend/` | 558 | Two tabs, live progress bar, client-side re-sort by any sub-score. Zero JS dependencies. |
 
-Totals: 23 Python files, 3,465 lines (2,632 under `app/`, 661 under `tests/`, 172 in `scripts/`). Six dependencies in `requirements.txt`: five runtime (fastapi, uvicorn, httpx, pydantic, python-dotenv) and pytest.
+Totals: 24 Python files, 3,994 lines (2,822 under `app/`, 1,000 under `tests/`, 172 in `scripts/`). Six dependencies in `requirements.txt`: five runtime (fastapi, uvicorn, httpx, pydantic, python-dotenv) and pytest.
 
 ### Data backends
 
@@ -131,7 +131,7 @@ Both sit behind the same four-method interface, so a third one is a drop-in. `ap
 
 Robinhood was evaluated and set aside for now. `robin_stocks` issues one request per contract with no published rate limit, so refreshing a single chain means hundreds of requests per second, which is a documented way to get an account blocked. Tradier serves a whole expiration in one call under a 120 requests/minute cap.
 
-The two live providers do not retry identically. CBOE retries with exponential backoff plus jitter on 403/429/5xx and raises a typed `FeedError` carrying the symbol, so failures get counted and reported instead of silently vanishing. Tradier retries on HTTP 429 only, honoring the server's `Retry-After` header when present and falling back to exponential backoff (no jitter) when it is not; every other error status goes straight to `raise_for_status()` and surfaces as `httpx.HTTPStatusError`. Bringing Tradier up to the CBOE contract is listed under "Status and known rough edges" below.
+The two live providers do not retry identically, but as of this pass they **fail** identically. CBOE retries with exponential backoff plus jitter on 403/429/5xx; Tradier retries on HTTP 429 only, honoring the server's `Retry-After` header when present and falling back to exponential backoff (no jitter) when it is not. What they now share is the outcome: every non-200, every unparseable body, and every `errors` block becomes a typed `FeedError` carrying the symbol, so a caller catching `FeedError` catches both providers and the sweep can count and report the failure.
 
 ### HTTP surface
 
@@ -263,10 +263,10 @@ All 25 knobs are environment variables read in `app/config.py` and documented in
 
 ```bash
 pytest -q
-# 49 passed
+# 73 passed
 ```
 
-40 test functions across five modules, 49 cases after parametrization (only `test_iv_roundtrip` is parametrized, 5 sigmas by 2 option types). Verified in a clean virtualenv on Python 3.14 while writing this: **49 passed in 2.14s**.
+62 test functions across six modules, 73 cases after parametrization (only `test_iv_roundtrip` is parametrized, 5 sigmas by 2 option types).
 
 Everything runs offline. No network access, no mocking library, no recorded-cassette dependency. Every network parser is a pure module-level function that takes a dict, so the provider tests feed it literal payloads. The two retry-path tests monkeypatch a fake transport.
 
@@ -274,11 +274,14 @@ Everything runs offline. No network access, no mocking library, no recorded-cass
 - `test_scoring.py`: all sub-scores bounded to `[0,100]`, Value rises with realized vol, the liquidity gate actually caps the composite, tighter spread scores more liquid, a no-price contract bottoms out at F.
 - `test_cboe.py`: OCC symbol parsing, quote/expiration/chain parsing with side and expiration filters, Yahoo history dropping nulls and sorting ascending, retry-then-succeed, `FeedError` after exhausting retries, multi-spelling symbol fallback.
 - `test_tradier.py`: scalar-vs-array collapse normalization, all four parsers, empty payloads are safe, batch-quote keying and chunking, the combined price+history path.
+- `test_failures_surface.py` (**new**): the whole "a failure must not look like an answer" class. Crossed and one-sided books, future-dated IV history, CBOE and Tradier non-200 / unparseable / `errors`-block responses, the shared `check_status` contract, and every inverted request range. Also the negative cases: a well-formed response with zero options is still a normal empty result, and a locked market (`ask == bid`) is still a market.
 - `test_market.py`: universe parsing, store round-trip, price-band pruning, descending sort, the distinct-names board cap regression, chain-failure counting surfaced in notes, budget truncation wording, order-independence (no alphabet bias), the cross-midnight TTL fix, and an end-to-end background sweep polled to completion through the real state machine.
 
 Roughly a 1:4 test-to-application line ratio.
 
-**Gaps, named honestly:** there are no HTTP-level tests of the five FastAPI endpoints (no `TestClient`), and no tests of the frontend JavaScript.
+**Gaps, named honestly:** the HTTP endpoints are exercised through `TestClient` in `test_failures_surface.py` (validation and the feed-failure paths), but there is no browser or integration suite over the real network feeds, and no tests of the frontend JavaScript.
+
+`test_failures_surface.py` is the module worth reading if you only read one. It pins the class of bug this app cares most about: a broken request or a broken feed must not come back looking like a normal answer.
 
 ---
 
@@ -304,12 +307,19 @@ Working and used. The version string in `app/api.py` is `0.2.0`. Honest caveats:
 - **The free feeds are unofficial.** The CBOE delayed-quote CDN and the Yahoo chart endpoint are public but undocumented, and they can change or start rate-limiting without notice. That is why the retry, the backoff, and the failure counting exist.
 - **Tradier sandbox is still delayed** and serves no Greeks. Only `TRADIER_ENV=production` on a brokerage account is real-time.
 - **"Top 50 across the market" is bounded by the scan budget.** With `MAX_CHAIN_SCANS` set, it is the top 50 across the most-liquid slice actually scanned. The notes always say which.
-- **Stale copy in two places.** The frontend tab still reads "Market (S&P 500 + ETFs)" (`frontend/index.html:18`) and the `app/market.py` module docstring still says "curated universe," both left over from before the OCC universe landed. The behavior is correct; the labels are behind.
-- **The two providers do not fail the same way.** `cboe.py` retries 403/429/5xx with jittered backoff and raises `FeedError`; `tradier.py` retries 429 only and lets everything else surface as `httpx.HTTPStatusError`. Callers that catch `FeedError` will not catch a Tradier 5xx. Unifying the two is on the roadmap.
+- **Stale copy in one place.** The frontend tab still reads "Market (S&P 500 + ETFs)" (`frontend/index.html:18`), left over from before the OCC universe landed. The behavior is correct; the label is behind.
+- **The two providers now fail the same way, from different transports.** Both raise `FeedError` for a non-200, an unparseable body, or an `errors` block, after their own retry policies are exhausted. `cboe.py` retries 403/429/5xx with jittered backoff; `tradier.py` retries 429 only. The *retry* policies still differ (documented above); the error *contract* no longer does.
 - **Config drift.** `.env.example` ships `MAX_CHAIN_SCANS=1500` while the built-in default in `config.py` is `2000`. The example is the lighter, faster setting.
 - **This is a calculator, not a broker.** It places no orders and connects to no execution venue. A letter grade summarizes seven measurable properties of a contract at a point in time; it is not advice and none of the output should be read as a recommendation.
 
-Roadmap, in rough priority order: `TestClient` coverage of the five endpoints, an American-option pricer (binomial or Bjerksund-Stensland) for the early-exercise cases, and persisting sweep results so a completed board survives a restart.
+Roadmap, in rough priority order: an American-option pricer (binomial or Bjerksund-Stensland) for the early-exercise cases, persisting sweep results so a completed board survives a restart, and a shared retry policy so the two providers stop differing in backoff as well as transport.
+
+## Resolved
+
+- **A feed failure no longer reads as an empty board.** A non-200 or an HTML body at HTTP 200 used to parse into zero expirations and return `200` with "No contracts matched your filters". It is now a `FeedError` that `/scan` maps to `502`, naming the reason; a well-formed response with zero options is still a normal empty board.
+- **A crossed book is not a two-sided market.** `has_two_sided_market` required `ask >= bid`; a crossed pair (`ask < bid`) used to satisfy it and produce a mid off the crossed quotes. It now falls back to the last trade and reports no spread.
+- **IV history cannot read the future.** `get_iv_history` and `snapshot_count` exclude rows dated after today, so a phantom future snapshot can no longer move IV rank or percentile.
+- **An impossible filter is rejected, not answered.** Inverted expiration, premium, price, and DTE ranges, and a whitespace-only ticker, return `422` with the specific mismatch instead of an empty result set.
 
 ---
 

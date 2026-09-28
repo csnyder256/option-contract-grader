@@ -82,12 +82,22 @@ class Store:
             self._conn.commit()
 
     def get_iv_history(self, symbol: str, lookback_days: int = 400) -> List[float]:
-        """Most recent `lookback_days` ATM-IV snapshots, oldest first."""
+        """Most recent `lookback_days` ATM-IV snapshots, oldest first.
+
+        Rows dated after today are excluded. They should not exist, but nothing
+        stops one landing here -- a caller passing an explicit ``snap_date``
+        ahead of the calendar, or a node with a skewed clock. ``iv_rank`` and
+        ``iv_percentile`` both derive the symbol's whole range and denominator
+        from this list, so a phantom future row distorts every score computed
+        from it. A future row is not history yet; excluding it costs one
+        comparison.
+        """
+        today = date.today().isoformat()
         with self._lock:
             cur = self._conn.execute(
-                "SELECT atm_iv FROM iv_snapshots WHERE symbol = ? "
+                "SELECT atm_iv FROM iv_snapshots WHERE symbol = ? AND snap_date <= ? "
                 "ORDER BY snap_date DESC LIMIT ?",
-                (symbol.upper(), lookback_days),
+                (symbol.upper(), today, lookback_days),
             )
             rows = [r[0] for r in cur.fetchall()]
         rows.reverse()
@@ -96,7 +106,8 @@ class Store:
     def snapshot_count(self, symbol: str) -> int:
         with self._lock:
             cur = self._conn.execute(
-                "SELECT COUNT(*) FROM iv_snapshots WHERE symbol = ?", (symbol.upper(),)
+                "SELECT COUNT(*) FROM iv_snapshots WHERE symbol = ? AND snap_date <= ?",
+                (symbol.upper(), date.today().isoformat()),
             )
             return int(cur.fetchone()[0])
 

@@ -24,7 +24,7 @@ import httpx
 
 from app.config import settings
 from app.models import Contract, OHLC, OptionType, Quote
-from app.providers.base import OptionsDataProvider, filter_side
+from app.providers.base import FeedError, OptionsDataProvider, filter_side
 
 
 # --------------------------------------------------------------------------- #
@@ -215,7 +215,13 @@ class TradierProvider(OptionsDataProvider):
                 time.sleep(sleep_for)
         self._req_times.append(time.monotonic())
 
-    def _get(self, path: str, params: Dict[str, Any], retries: int = 3) -> Dict[str, Any]:
+    def _get_raw(self, path: str, params: Dict[str, Any], retries: int = 3):
+        """GET with the throttle + 429 backoff; returns the raw response.
+
+        The caller decides how to interpret the body, so a non-200 can become a
+        typed FeedError instead of an unhandled httpx exception.
+        """
+        resp = None
         for attempt in range(retries + 1):
             self._throttle()
             resp = self._client.get(path, params=params)
@@ -226,13 +232,17 @@ class TradierProvider(OptionsDataProvider):
                 if attempt < retries:
                     time.sleep(wait)
                     continue
-                resp.raise_for_status()
-            resp.raise_for_status()
-            return resp.json()
-        raise RuntimeError("Unreachable")
+            return resp
+        return resp  # pragma: no cover - loop always returns
 
-    def _post(self, path: str, data: Dict[str, Any], retries: int = 3) -> Dict[str, Any]:
-        """POST with the same throttle + 429 backoff as _get (used for bulk quotes)."""
+    def _get(self, path: str, params: Dict[str, Any], retries: int = 3,
+             symbol: str = "") -> Dict[str, Any]:
+        resp = self._get_raw(path, params, retries)
+        return self._parse_json(resp, symbol, path)
+
+    def _post_raw(self, path: str, data: Dict[str, Any], retries: int = 3):
+        """POST with the same throttle + 429 backoff; returns the raw response."""
+        resp = None
         for attempt in range(retries + 1):
             self._throttle()
             resp = self._client.post(path, data=data)
@@ -242,15 +252,46 @@ class TradierProvider(OptionsDataProvider):
                 if attempt < retries:
                     time.sleep(wait)
                     continue
-                resp.raise_for_status()
-            resp.raise_for_status()
-            return resp.json()
-        raise RuntimeError("Unreachable")
+            return resp
+        return resp  # pragma: no cover - loop always returns
+
+    def _post(self, path: str, data: Dict[str, Any], retries: int = 3,
+              symbol: str = "") -> Dict[str, Any]:
+        resp = self._post_raw(path, data, retries)
+        return self._parse_json(resp, symbol, path)
 
     # -- provider interface -----------------------------------------------
+    def _parse_json(self, resp, symbol: str = "", what: str = "request") -> Dict[str, Any]:
+        """JSON body, or a counted FeedError -- never an empty result.
+
+        Tradier answers a bad symbol with ``{"quotes": "null"}`` (or an
+        ``errors`` block) at HTTP 200. ``parse_quote`` already raises on that,
+        but the chain/history/expiration parsers returned an empty list, and an
+        empty list is indistinguishable from "no options listed". A 429 or 5xx
+        that survived the retry loop used to arrive as a bare
+        ``httpx.HTTPStatusError``, which callers catching ``FeedError`` never
+        saw -- the README lists that as a documented rough edge.
+        """
+        status = getattr(resp, "status_code", 200)
+        if status != 200:
+            raise FeedError(
+                symbol or "?",
+                f"{what}: HTTP {status}{'' if status != 429 else ' (rate limit, retries exhausted)'}",
+            )
+        try:
+            payload = resp.json()
+        except ValueError as e:
+            raise FeedError(symbol or "?", f"{what}: unparseable JSON response") from e
+        if isinstance(payload, dict) and payload.get("errors"):
+            errs = payload["errors"]
+            if isinstance(errs, dict):
+                errs = errs.get("error") or errs
+            raise FeedError(symbol or "?", f"{what}: {errs}")
+        return payload if isinstance(payload, dict) else {}
+
     def get_quote(self, symbol: str) -> Quote:
-        payload = self._get("/v1/markets/quotes", {"symbols": symbol, "greeks": "false"})
-        return parse_quote(payload, symbol, self.default_q)
+        resp = self._get_raw("/v1/markets/quotes", {"symbols": symbol, "greeks": "false"})
+        return parse_quote(self._parse_json(resp, symbol, "quote"), symbol, self.default_q)
 
     def get_quotes_batch(self, symbols: List[str]) -> Dict[str, Quote]:
         """Fetch many underlying quotes in a few POST calls (chunked).
@@ -264,7 +305,8 @@ class TradierProvider(OptionsDataProvider):
         for i in range(0, len(syms), batch):
             chunk = syms[i:i + batch]
             payload = self._post(
-                "/v1/markets/quotes", {"symbols": ",".join(chunk), "greeks": "false"}
+                "/v1/markets/quotes", {"symbols": ",".join(chunk), "greeks": "false"},
+                symbol=",".join(chunk),
             )
             out.update(parse_quotes_batch(payload, self.default_q))
         return out
@@ -273,6 +315,7 @@ class TradierProvider(OptionsDataProvider):
         payload = self._get(
             "/v1/markets/options/expirations",
             {"symbol": symbol, "includeAllRoots": "true", "strikes": "false"},
+            symbol=symbol,
         )
         return parse_expirations(payload)
 
@@ -280,6 +323,7 @@ class TradierProvider(OptionsDataProvider):
         payload = self._get(
             "/v1/markets/options/chains",
             {"symbol": symbol, "expiration": expiration.isoformat(), "greeks": "true"},
+            symbol=symbol,
         )
         return parse_chain(payload, side=side)
 
@@ -297,6 +341,7 @@ class TradierProvider(OptionsDataProvider):
                 "start": start.isoformat(),
                 "end": end.isoformat(),
             },
+            symbol=symbol,
         )
         return parse_history(payload)
 
