@@ -22,6 +22,7 @@ quotes, history) and https://docs.tradier.com/docs/rate-limiting
 from __future__ import annotations
 
 import time
+import math
 from collections import deque
 from datetime import date, datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -86,7 +87,8 @@ def parse_retry_after(value: Optional[str], now: Optional[datetime] = None) -> O
     if not text:
         return None
     try:
-        return max(0.0, float(text))
+        seconds = float(text)
+        return max(0.0, seconds) if math.isfinite(seconds) else None
     except ValueError:
         pass
     try:

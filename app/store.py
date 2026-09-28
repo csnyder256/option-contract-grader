@@ -25,6 +25,7 @@ threads can share one connection safely.
 
 from __future__ import annotations
 
+import math
 import os
 import sqlite3
 import threading
@@ -81,7 +82,6 @@ class Store:
         symbol: str,
         atm_iv: float,
         snap_date: Optional[date] = None,
-        observed_at: Optional[str] = None,
     ) -> bool:
         """Record `snap_date`'s ATM IV for `symbol` if that day is still unobserved.
 
@@ -90,11 +90,8 @@ class Store:
         (so a caller can tell a fresh observation from a duplicate), False when
         the day was already present.
 
-        ``observed_at`` is reserved for callers that want to tag the row with an
-        explicit UTC timestamp; the date itself is always ``snap_date`` so the
-        daily series stays one row per symbol per day.
         """
-        if atm_iv is None or atm_iv <= 0:
+        if atm_iv is None or not math.isfinite(atm_iv) or atm_iv <= 0:
             return False
         d = (snap_date or date.today()).isoformat()
         # ON CONFLICT DO NOTHING (not OR REPLACE): the daily series must be
@@ -150,7 +147,7 @@ class Store:
         a name does not restamp it as freshly fetched. When omitted the row is
         stamped now, which is correct for a genuinely new fetch.
         """
-        if price is None or price <= 0:
+        if price is None or not math.isfinite(price) or price <= 0:
             return
         d = (snap_date or date.today()).isoformat()
         now = observed_at or datetime.now(timezone.utc).isoformat()
@@ -203,8 +200,10 @@ class Store:
             ts = datetime.fromisoformat(row[2])
         except ValueError:
             return None
+        if ts.tzinfo is None:
+            return None
         age_h = (datetime.now(timezone.utc) - ts).total_seconds() / 3600.0
-        if age_h > max_age_hours:
+        if age_h < 0 or age_h > max_age_hours:
             return None
         if with_timestamp:
             return (row[0], row[1], row[2])

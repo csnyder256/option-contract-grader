@@ -1,3 +1,4 @@
+import pytest
 """Offline tests for Tradier JSON parsing (no network)."""
 
 from datetime import date, datetime, timezone
@@ -265,11 +266,13 @@ def test_exhausted_429_names_the_symbol_on_the_batch_path(monkeypatch):
         assert e.symbol == "MSFT"          # first ticker of the batch
 
 
-def test_non_429_error_status_still_raises_http_status_error(monkeypatch):
-    # Pinned so the asymmetry that remains with CBOE is visible, not assumed.
+def test_non_429_error_status_is_a_counted_feed_error(monkeypatch):
     p, _, _ = _scripted(monkeypatch, [_resp(503)])
-    try:
+    with pytest.raises(FeedError, match="AAPL.*HTTP 503"):
         p._get("/v1/markets/quotes", {"symbols": "AAPL"})
-        raise AssertionError("expected HTTPStatusError")
-    except httpx.HTTPStatusError:
-        pass
+
+
+def test_nonfinite_retry_after_uses_transport_backoff():
+    from app.providers.tradier import parse_retry_after
+    for value in ("NaN", "Inf", "-Inf"):
+        assert parse_retry_after(value) is None

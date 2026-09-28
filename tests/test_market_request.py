@@ -16,26 +16,20 @@ import pytest
 from app.api import MarketScanRequest
 from app.config import Settings
 from app.models import Contract, OptionType, Quote
-from app.providers.base import OptionsDataProvider, filter_side
+from app.providers.base import OptionsDataProvider, UnknownSide, filter_side, normalize_side
 from app.scanner import ScanFilters, scan_symbol
 from app.store import Store
 
 
 # --------------------------------------------------------------------------- #
-# filter_side still widens an unknown value -- which is exactly why the API
-# boundary has to reject one before it ever reaches a provider.
+# Validation is shared by HTTP and direct scanner/provider callers.
 # --------------------------------------------------------------------------- #
 
-def test_filter_side_widens_an_unknown_side():
-    """Documents the provider-level behavior the API guards against.
 
-    If a future change makes filter_side raise instead, this test fails on
-    purpose: the guard in app/api.py becomes redundant and should be revisited
-    rather than left to rot.
-    """
-    for unknown in ("callz", "putss", "", "X", "ccalls"):
-        assert filter_side(OptionType.CALL, unknown) is True
-        assert filter_side(OptionType.PUT, unknown) is True
+def test_filter_side_rejects_an_unknown_side():
+    for unknown in ("callz", "putss", "X", "ccalls"):
+        with pytest.raises(UnknownSide):
+            filter_side(OptionType.CALL, unknown)
 
 
 def test_filter_side_still_narrows_the_documented_values():
@@ -77,7 +71,7 @@ def test_market_scan_rejects_unknown_side(monkeypatch, bad):
     client = _client(monkeypatch)
     r = client.post("/market/scan", json={"side": bad})
     assert r.status_code == 422, f"side={bad!r} -> {r.status_code}"
-    assert "side must be one of" in r.json()["detail"]
+    assert any("side must be one of" in item["msg"] for item in r.json()["detail"])
 
 
 def test_market_scan_rejects_unknown_side_before_starting_a_sweep(monkeypatch):
@@ -105,7 +99,7 @@ def test_market_scan_rejects_unknown_side_before_starting_a_sweep(monkeypatch):
 @pytest.mark.parametrize("good", ["both", "all", "calls", "call", "puts", "PUT", " both "])
 def test_market_scan_accepts_the_documented_sides(good):
     """The spellings the UI and the docs use still validate."""
-    assert MarketScanRequest(side=good).side == good
+    assert MarketScanRequest(side=good).side == normalize_side(good)
 
 
 def test_market_scan_still_starts_on_a_good_request(monkeypatch):
@@ -150,9 +144,8 @@ def test_market_scan_still_starts_on_a_good_request(monkeypatch):
 def test_a_typo_never_produces_a_widened_board_through_scan_symbol():
     """The observable consequence, at the level the providers actually see.
 
-    Reaching scan_symbol with a typo returns calls AND puts; the API guards
-    exist so that request never gets that far. This pins the behavior the guard
-    is protecting the user from.
+    Direct scanner callers reject a typo too; every path shares the same
+    provider-level validation rather than silently widening the request.
     """
     class TwoSided(OptionsDataProvider):
         supports_batch_quotes = False
@@ -180,13 +173,10 @@ def test_a_typo_never_produces_a_widened_board_through_scan_symbol():
             return []
 
     prov, store = TwoSided(), Store(":memory:")
-    widened = scan_symbol("TEST", prov, store, 100.0, 0.0, 0.30,
-                          ScanFilters(side="callz"))
+    with pytest.raises(UnknownSide):
+        scan_symbol("TEST", prov, store, 100.0, 0.0, 0.30, ScanFilters(side="callz"))
     narrowed = scan_symbol("TEST", prov, store, 100.0, 0.0, 0.30,
                            ScanFilters(side="calls"))
-    assert {sc.contract.option_type for sc in widened.scored} == {
-        OptionType.CALL, OptionType.PUT
-    }
     assert {sc.contract.option_type for sc in narrowed.scored} == {OptionType.CALL}
 
 

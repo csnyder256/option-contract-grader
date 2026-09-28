@@ -120,7 +120,7 @@ def test_scan_rejects_unknown_side(client):
 
 def test_scan_rejects_blank_ticker(client):
     r = client.post("/scan", json={"ticker": "   "})
-    assert r.status_code == 400
+    assert r.status_code == 422
 
 
 def test_scan_maps_feed_error_to_502(client):

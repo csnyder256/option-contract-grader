@@ -36,6 +36,8 @@ SIDE_DESCRIPTION = '"calls", "puts", or "both"'
 
 def _validate_side(value: str) -> str:
     """Reject an unknown `side` (typos must not silently widen to both sides)."""
+    if not value.strip():
+        raise ValueError("side must be one of calls, puts, or both")
     try:
         return normalize_side(value)
     except ValueError as e:
@@ -291,28 +293,8 @@ class MarketScanRequest(BaseModel):
         return self
 
 
-def _reject_unknown_side(side: str) -> str:
-    """Reject a `side` that is not one of calls / puts / both.
-
-    The sweep hands `side` straight to the provider, which widens anything it
-    does not recognize to BOTH sides. A typo therefore comes back as a
-    full-board result the caller never asked for, and - because the sweep runs
-    in a background thread - that result is indistinguishable from a real one.
-    Rejecting it here is the same guard /scan puts on ScanRequest.
-    """
-    if (side or "").strip().lower() not in ("calls", "call", "puts", "put", "both", "all"):
-        raise ValueError(
-            f'side must be one of "calls", "puts", or "both" (got {side!r})'
-        )
-    return side
-
-
 @app.post("/market/scan")
 def market_scan(req: MarketScanRequest):
-    try:
-        _reject_unknown_side(req.side)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
     try:
         provider = get_provider()
     except ValueError as e:

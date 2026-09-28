@@ -233,3 +233,22 @@ def test_repeated_scans_report_a_stable_iv_rank_through_the_api():
     assert store.snapshot_count("AAPL") == 12                   # still one row per day
     assert store.get_iv_history("AAPL")[-1] == recorded         # day not rewritten
     assert second.json()["meta"]["iv_rank"] == first.json()["meta"]["iv_rank"]
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_nonfinite_observations_never_enter_history_or_cache(value):
+    store = Store(":memory:")
+    assert store.save_iv_snapshot("AAPL", value) is False
+    store.save_underlying("AAPL", value, 0.2)
+    assert store.snapshot_count("AAPL") == 0
+    assert store.get_underlying("AAPL") is None
+
+
+@pytest.mark.parametrize("timestamp", [
+    (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+    datetime.now().isoformat(),
+])
+def test_future_or_unzoned_cache_timestamp_cannot_claim_freshness(timestamp):
+    store = Store(":memory:")
+    store.save_underlying("AAPL", 100, 0.2, observed_at=timestamp)
+    assert store.get_underlying_fresh("AAPL", 24) is None

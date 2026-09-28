@@ -4,7 +4,7 @@
 
 [![ci](https://github.com/csnyder256/option-contract-grader/actions/workflows/ci.yml/badge.svg)](https://github.com/csnyder256/option-contract-grader/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
-![Tests](https://img.shields.io/badge/tests-82%20passing%2C%20offline-brightgreen?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-offline-brightgreen?style=flat-square)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white)
 ![Frontend](https://img.shields.io/badge/frontend-no%20build%20step-orange?style=flat-square)
@@ -144,7 +144,7 @@ The two live providers do not retry identically, but as of this pass they **fail
 | GET | `/key` | Grade legend and sub-score labels |
 | GET | `/` | The static frontend |
 
-`side` accepts `calls`, `puts`, or `both` (plus the `call`/`put`/`all` aliases and case-insensitive spellings). An omitted or blank string retains the `both` default. Other unknown strings and JSON `null` are a `422` — an unknown side is never silently widened to both sides.
+`side` accepts `calls`, `puts`, or `both` (plus the `call`/`put`/`all` aliases and case-insensitive spellings). An omitted side retains the `both` default. Blank or unknown strings and JSON `null` are a `422` — an unknown side is never silently widened to both sides.
 
 ```bash
 curl -s localhost:8000/scan \
@@ -288,7 +288,7 @@ Everything runs offline. No network access, no mocking library, no recorded-cass
 - `test_tradier.py`: scalar-vs-array collapse normalization, all four parsers, empty payloads are safe, batch-quote keying and chunking, the combined price+history path.
 - `test_failures_surface.py` (**new**): the whole "a failure must not look like an answer" class. Crossed and one-sided books, future-dated IV history, CBOE and Tradier non-200 / unparseable / JSON-non-object / `errors`-block responses, the shared `check_status` contract, and every inverted request range. Also the negative cases: a well-formed response with zero options is still a normal empty result, and a locked market (`ask == bid`) is still a market. Finally, the real `TestClient` endpoint tests: a malformed feed through `/scan` is `502` with the reason named, a healthy empty feed is `200` with an empty board, and inverted or blank requests are `422` with the provider stubbed to raise if it is ever touched (proving validation runs before any feed work).
 - `test_market.py`: universe parsing, store round-trip, price-band pruning, descending sort, the distinct-names board cap regression, chain-failure counting surfaced in notes, budget truncation wording, order-independence (no alphabet bias), the cross-midnight TTL fix, and an end-to-end background sweep polled to completion through the real state machine.
-- `test_api.py`: `TestClient` coverage of the five endpoints (no network, stubbed provider/store) — `/health`, `/key`, `/scan` (ranked results, side filtering, 400 on blank ticker, 502 on a feed error, limit handling, the default-DTE note), `/market/scan` + `/market/status` polled to completion, and `/` serving the frontend. It also pins the `side` contract: `calls`/`put`/`all` aliases normalize, and an unknown side is rejected (HTTP 422) instead of silently widening to both sides.
+- `test_api.py`: `TestClient` coverage of the five endpoints (no network, stubbed provider/store) — `/health`, `/key`, `/scan` (ranked results, side filtering, 422 on blank ticker, 502 on a feed error, limit handling, the default-DTE note), `/market/scan` + `/market/status` polled to completion, and `/` serving the frontend. It also pins the `side` contract: `calls`/`put`/`all` aliases normalize, and an unknown side is rejected (HTTP 422) instead of silently widening to both sides.
 
 Roughly a 1:2.4 test-to-application line ratio (1,198 test lines against 2,843 application lines).
 
