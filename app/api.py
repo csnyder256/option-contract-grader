@@ -18,18 +18,29 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app import market
 from app.config import settings
 from app.engine.grading import grade_key
 from app.engine.scoring import LABELS
 from app.engine.volatility import hv_from_bars
-from app.providers.base import FeedError, OptionsDataProvider
+from app.providers.base import FeedError, OptionsDataProvider, normalize_side
 from app.providers.cboe import CboeProvider
 from app.providers.tradier import TradierProvider
 from app.scanner import ScanFilters, scan_symbol
 from app.store import Store
+
+SIDE_DESCRIPTION = '"calls", "puts", or "both"'
+
+
+def _validate_side(value: str) -> str:
+    """Reject an unknown `side` (typos must not silently widen to both sides)."""
+    try:
+        return normalize_side(value)
+    except ValueError as e:
+        raise ValueError(str(e)) from None
+
 
 app = FastAPI(title="Deterministic Options Finder", version="0.2.0")
 
@@ -104,8 +115,10 @@ class ScanRequest(BaseModel):
     expiration_to: Optional[date] = Field(None, description="Latest expiration (inclusive)")
     premium_min: Optional[float] = Field(None, description="Min premium PER SHARE")
     premium_max: Optional[float] = Field(None, description="Max premium PER SHARE")
-    side: str = Field("both", description='"calls", "puts", or "both"')
+    side: str = Field("both", description=SIDE_DESCRIPTION)
     limit: int = Field(50, ge=1, le=500)
+
+    _check_side = field_validator("side")(_validate_side)
 
 
 def run_scan(req: ScanRequest, provider: OptionsDataProvider, store: Store) -> dict:
@@ -197,10 +210,12 @@ class MarketScanRequest(BaseModel):
     price_max: Optional[float] = Field(None, description="Max underlying STOCK price")
     premium_min: Optional[float] = Field(None, description="Min premium PER SHARE")
     premium_max: Optional[float] = Field(None, description="Max premium PER SHARE")
-    side: str = Field("both", description='"calls", "puts", or "both"')
+    side: str = Field("both", description=SIDE_DESCRIPTION)
     dte_from: Optional[int] = Field(None, description="Min days to expiration")
     dte_to: Optional[int] = Field(None, description="Max days to expiration")
     limit: int = Field(50, ge=1, le=200)
+
+    _check_side = field_validator("side")(_validate_side)
 
 
 @app.post("/market/scan")
