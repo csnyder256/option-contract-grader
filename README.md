@@ -4,7 +4,7 @@
 
 [![ci](https://github.com/csnyder256/option-contract-grader/actions/workflows/ci.yml/badge.svg)](https://github.com/csnyder256/option-contract-grader/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
-![Tests](https://img.shields.io/badge/tests-49%20passing%2C%20offline-brightgreen?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-57%20passing%2C%20offline-brightgreen?style=flat-square)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white)
 ![Frontend](https://img.shields.io/badge/frontend-no%20build%20step-orange?style=flat-square)
@@ -131,7 +131,7 @@ Both sit behind the same four-method interface, so a third one is a drop-in. `ap
 
 Robinhood was evaluated and set aside for now. `robin_stocks` issues one request per contract with no published rate limit, so refreshing a single chain means hundreds of requests per second, which is a documented way to get an account blocked. Tradier serves a whole expiration in one call under a 120 requests/minute cap.
 
-The two live providers do not retry identically. CBOE retries with exponential backoff plus jitter on 403/429/5xx and raises a typed `FeedError` carrying the symbol, so failures get counted and reported instead of silently vanishing. Tradier retries on HTTP 429 only, honoring the server's `Retry-After` header when present and falling back to exponential backoff (no jitter) when it is not; every other error status goes straight to `raise_for_status()` and surfaces as `httpx.HTTPStatusError`. Bringing Tradier up to the CBOE contract is listed under "Status and known rough edges" below.
+The two live providers do not retry identically. CBOE retries with exponential backoff plus jitter on 403/429/5xx and raises a typed `FeedError` carrying the symbol, so failures get counted and reported instead of silently vanishing. Tradier retries on HTTP 429 only. It honors the server's `Retry-After` header in both legal forms — delta-seconds and HTTP-date — and clamps the wait to `FEED_BACKOFF_CAP` so a response header cannot park a sweep worker indefinitely; with no usable header it uses exponential backoff (no jitter). A rate-limit call whose retries are exhausted raises the same typed `FeedError` CBOE raises, while every other error status still goes straight to `raise_for_status()` and surfaces as `httpx.HTTPStatusError`. Bringing Tradier's non-429 statuses onto the CBOE contract is listed under "Status and known rough edges" below.
 
 ### HTTP surface
 
@@ -263,18 +263,18 @@ All 25 knobs are environment variables read in `app/config.py` and documented in
 
 ```bash
 pytest -q
-# 49 passed
+# 57 passed
 ```
 
-40 test functions across five modules, 49 cases after parametrization (only `test_iv_roundtrip` is parametrized, 5 sigmas by 2 option types). Verified in a clean virtualenv on Python 3.14 while writing this: **49 passed in 2.14s**.
+48 test functions across five modules, 57 cases after parametrization (only `test_iv_roundtrip` is parametrized, 5 sigmas by 2 option types). That is the number CI reports: `.github/workflows/ci.yml` runs this suite on Python 3.12 for every push and pull request, and the badge at the top of this file is that run's own result rather than a paste from someone's terminal. No cell in this README states a count no service produced.
 
 Everything runs offline. No network access, no mocking library, no recorded-cassette dependency. Every network parser is a pure module-level function that takes a dict, so the provider tests feed it literal payloads. The two retry-path tests monkeypatch a fake transport.
 
 - `test_blackscholes.py`: BSM against textbook values, put-call parity, IV round-trip across several sigmas and both sides, IV below intrinsic returns `None`, Greek sign conventions, `prob_itm` monotonic in strike.
 - `test_scoring.py`: all sub-scores bounded to `[0,100]`, Value rises with realized vol, the liquidity gate actually caps the composite, tighter spread scores more liquid, a no-price contract bottoms out at F.
 - `test_cboe.py`: OCC symbol parsing, quote/expiration/chain parsing with side and expiration filters, Yahoo history dropping nulls and sorting ascending, retry-then-succeed, `FeedError` after exhausting retries, multi-spelling symbol fallback.
-- `test_tradier.py`: scalar-vs-array collapse normalization, all four parsers, empty payloads are safe, batch-quote keying and chunking, the combined price+history path.
-- `test_market.py`: universe parsing, store round-trip, price-band pruning, descending sort, the distinct-names board cap regression, chain-failure counting surfaced in notes, budget truncation wording, order-independence (no alphabet bias), the cross-midnight TTL fix, and an end-to-end background sweep polled to completion through the real state machine.
+- `test_tradier.py`: scalar-vs-array collapse normalization, all four parsers, empty payloads are safe, batch-quote keying and chunking, the combined price+history path, and the 429 policy: both legal `Retry-After` forms, the cap clamp, the exponential fallback, the named `FeedError` when retries are exhausted, and the non-429 status that still raises `HTTPStatusError`.
+- `test_market.py`: universe parsing, store round-trip, price-band pruning, descending sort, the distinct-names board cap regression, chain-failure counting surfaced in notes, the failed-batch-quote note that names the feed's own reason, budget truncation wording, order-independence (no alphabet bias), the cross-midnight TTL fix, and an end-to-end background sweep polled to completion through the real state machine.
 
 Roughly a 1:4 test-to-application line ratio.
 
@@ -305,11 +305,11 @@ Working and used. The version string in `app/api.py` is `0.2.0`. Honest caveats:
 - **Tradier sandbox is still delayed** and serves no Greeks. Only `TRADIER_ENV=production` on a brokerage account is real-time.
 - **"Top 50 across the market" is bounded by the scan budget.** With `MAX_CHAIN_SCANS` set, it is the top 50 across the most-liquid slice actually scanned. The notes always say which.
 - **Stale copy in two places.** The frontend tab still reads "Market (S&P 500 + ETFs)" (`frontend/index.html:18`) and the `app/market.py` module docstring still says "curated universe," both left over from before the OCC universe landed. The behavior is correct; the labels are behind.
-- **The two providers do not fail the same way.** `cboe.py` retries 403/429/5xx with jittered backoff and raises `FeedError`; `tradier.py` retries 429 only and lets everything else surface as `httpx.HTTPStatusError`. Callers that catch `FeedError` will not catch a Tradier 5xx. Unifying the two is on the roadmap.
+- **The two providers do not fail the same way.** `cboe.py` retries 403/429/5xx with jittered backoff and raises `FeedError`; `tradier.py` retries 429 only and lets every other status surface as `httpx.HTTPStatusError`. A rate-limited Tradier call now raises `FeedError` too (and honors both `Retry-After` forms, clamped to `FEED_BACKOFF_CAP`), but a Tradier 5xx still does not: callers that catch `FeedError` will not catch it. Unifying the rest is on the roadmap.
 - **Config drift.** `.env.example` ships `MAX_CHAIN_SCANS=1500` while the built-in default in `config.py` is `2000`. The example is the lighter, faster setting.
 - **This is a calculator, not a broker.** It places no orders and connects to no execution venue. A letter grade summarizes seven measurable properties of a contract at a point in time; it is not advice and none of the output should be read as a recommendation.
 
-Roadmap, in rough priority order: `TestClient` coverage of the five endpoints, an American-option pricer (binomial or Bjerksund-Stensland) for the early-exercise cases, and persisting sweep results so a completed board survives a restart.
+Roadmap, in rough priority order: an American-option pricer (binomial or Bjerksund-Stensland) for the early-exercise cases, persisting sweep results so a completed board survives a restart, and putting Tradier's remaining non-429 statuses on the CBOE `FeedError` contract.
 
 ---
 
