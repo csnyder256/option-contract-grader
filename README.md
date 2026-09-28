@@ -4,7 +4,7 @@
 
 [![ci](https://github.com/csnyder256/option-contract-grader/actions/workflows/ci.yml/badge.svg)](https://github.com/csnyder256/option-contract-grader/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
-![Tests](https://img.shields.io/badge/tests-49%20passing%2C%20offline-brightgreen?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-64%20passing%2C%20offline-brightgreen?style=flat-square)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white)
 ![Frontend](https://img.shields.io/badge/frontend-no%20build%20step-orange?style=flat-square)
@@ -99,23 +99,23 @@ Dependency flow is one-way: frontend to `api.py`, `api.py` to `scanner.py` and `
 
 | File | LOC | Role |
 |---|---:|---|
-| `app/api.py` | 262 | FastAPI surface. Providers and the store are lazily-created singletons, so importing the app never requires a token. `StaticFiles` is mounted last so API routes win. |
+| `app/api.py` | 277 | FastAPI surface. Providers and the store are lazily-created singletons, so importing the app never requires a token. `side` is validated here (unknown → 422). `StaticFiles` is mounted last so API routes win. |
 | `app/config.py` | 153 | One dataclass, exactly 25 env-var knobs: weights, grade bands, liquidity thresholds, sweep tuning. No threshold is hardcoded in logic. |
 | `app/models.py` | 142 | Dataclasses. `Contract` derives `mid` / `has_two_sided_market` / `spread_pct`, falling back to last trade on a one-sided market. |
 | `app/engine/blackscholes.py` | 215 | BSM with continuous dividend yield `q`: `bs_price`, `greeks`, `implied_vol`, `prob_itm`. |
 | `app/engine/volatility.py` | 150 | Close-to-close and Yang-Zhang realized vol, IV/HV ratio, `iv_rank`, `iv_percentile`. |
 | `app/engine/scoring.py` | 270 | The seven sub-scores, the composite, the liquidity gate, the English strings. |
 | `app/engine/grading.py` | 41 | Score to letter plus meaning, and the `grade_key()` the UI legend reads. |
-| `app/providers/base.py` | 92 | Abstract `OptionsDataProvider` (four required methods) plus `FeedError` and two optional-optimization hooks with working defaults. |
+| `app/providers/base.py` | 138 | Abstract `OptionsDataProvider` (four required methods) plus `FeedError`, `UnknownSide`, the `normalize_side`/`filter_side` side contract, and two optional-optimization hooks with working defaults. |
 | `app/providers/cboe.py` | 332 | Pure parser functions plus a thin networked class. OCC symbol parsing, symbol-spelling fallbacks, in-process chain cache. |
 | `app/providers/tradier.py` | 304 | Same pure-parser / client split, but a different retry policy (429 only). Batched quotes, scalar-vs-array normalization, client-side rate limiting at 118 requests/minute against a 120 cap. |
 | `app/scanner.py` | 131 | The shared per-symbol core described above. |
-| `app/market.py` | 373 | Universe loading, the locked background state machine, and `run_market_sweep` as a testable function taking a progress callback and injectable providers. |
+| `app/market.py` | 377 | Universe loading, the locked background state machine, and `run_market_sweep` as a testable function taking a progress callback and injectable providers. |
 | `app/store.py` | 164 | SQLite: `iv_snapshots` and `underlying_cache`, an in-place `ALTER TABLE` migration, `check_same_thread=False` plus an `RLock` so sweep workers share one connection. |
 | `scripts/update_universe.py` | 172 | Regenerates the optionable universe from the OCC directory, with fallbacks. |
 | `frontend/` | 558 | Two tabs, live progress bar, client-side re-sort by any sub-score. Zero JS dependencies. |
 
-Totals: 23 Python files, 3,465 lines (2,632 under `app/`, 661 under `tests/`, 172 in `scripts/`). Six dependencies in `requirements.txt`: five runtime (fastapi, uvicorn, httpx, pydantic, python-dotenv) and pytest.
+Totals: 24 Python files, 3,725 lines (2,697 under `app/`, 856 under `tests/`, 172 in `scripts/`). Six dependencies in `requirements.txt`: five runtime (fastapi, uvicorn, httpx, pydantic, python-dotenv) and pytest.
 
 ### Data backends
 
@@ -143,6 +143,8 @@ The two live providers do not retry identically. CBOE retries with exponential b
 | GET | `/health` | Config sanity, provider in use, universe size |
 | GET | `/key` | Grade legend and sub-score labels |
 | GET | `/` | The static frontend |
+
+`side` accepts `calls`, `puts`, or `both` (plus the `call`/`put`/`all` aliases). Anything else is a `422` — an unknown side is never silently widened to both sides.
 
 ```bash
 curl -s localhost:8000/scan \
@@ -263,10 +265,10 @@ All 25 knobs are environment variables read in `app/config.py` and documented in
 
 ```bash
 pytest -q
-# 49 passed
+# 64 passed
 ```
 
-40 test functions across five modules, 49 cases after parametrization (only `test_iv_roundtrip` is parametrized, 5 sigmas by 2 option types). Verified in a clean virtualenv on Python 3.14 while writing this: **49 passed in 2.14s**.
+41 test functions across six modules, 64 cases after parametrization (only `test_iv_roundtrip` is parametrized, 5 sigmas by 2 option types). Verified in a clean virtualenv on Python 3.11: **64 passed in 2.65s**.
 
 Everything runs offline. No network access, no mocking library, no recorded-cassette dependency. Every network parser is a pure module-level function that takes a dict, so the provider tests feed it literal payloads. The two retry-path tests monkeypatch a fake transport.
 
@@ -275,10 +277,11 @@ Everything runs offline. No network access, no mocking library, no recorded-cass
 - `test_cboe.py`: OCC symbol parsing, quote/expiration/chain parsing with side and expiration filters, Yahoo history dropping nulls and sorting ascending, retry-then-succeed, `FeedError` after exhausting retries, multi-spelling symbol fallback.
 - `test_tradier.py`: scalar-vs-array collapse normalization, all four parsers, empty payloads are safe, batch-quote keying and chunking, the combined price+history path.
 - `test_market.py`: universe parsing, store round-trip, price-band pruning, descending sort, the distinct-names board cap regression, chain-failure counting surfaced in notes, budget truncation wording, order-independence (no alphabet bias), the cross-midnight TTL fix, and an end-to-end background sweep polled to completion through the real state machine.
+- `test_api.py`: `TestClient` coverage of the five endpoints (no network, stubbed provider/store) — `/health`, `/key`, `/scan` (ranked results, side filtering, 400 on blank ticker, 502 on a feed error, limit handling, the default-DTE note), `/market/scan` + `/market/status` polled to completion, and `/` serving the frontend. It also pins the `side` contract: `calls`/`put`/`all` aliases normalize, and an unknown side is rejected (HTTP 422) instead of silently widening to both sides.
 
 Roughly a 1:4 test-to-application line ratio.
 
-**Gaps, named honestly:** there are no HTTP-level tests of the five FastAPI endpoints (no `TestClient`), and no tests of the frontend JavaScript.
+**Gaps, named honestly:** there are no tests of the frontend JavaScript, and the HTTP tests stub the provider/store singletons rather than exercising a real network path (that is by design — the suite stays offline).
 
 ---
 
@@ -299,17 +302,17 @@ This repo is a sanitized copy of a working local install. The exclusions are enf
 
 Working and used. The version string in `app/api.py` is `0.2.0`. Honest caveats:
 
-- **No packaging and no CI.** There is no `pyproject.toml`, no `setup.py`, no lockfile, and no `.github/` directory. The test number above is one run locally in a clean venv, not one a service verified.
+- **No packaging.** There is no `pyproject.toml`, no `setup.py`, and no lockfile. CI does exist (`.github/workflows/ci.yml`) and runs the offline suite on Python 3.12.
 - **BSM is European; US equity options are American.** Inverting a European model against an American premium is an approximation. It is a good one for the non-dividend, non-deep-ITM majority of the board, and it is wrong at the edges. Early exercise is not modeled.
 - **The free feeds are unofficial.** The CBOE delayed-quote CDN and the Yahoo chart endpoint are public but undocumented, and they can change or start rate-limiting without notice. That is why the retry, the backoff, and the failure counting exist.
 - **Tradier sandbox is still delayed** and serves no Greeks. Only `TRADIER_ENV=production` on a brokerage account is real-time.
 - **"Top 50 across the market" is bounded by the scan budget.** With `MAX_CHAIN_SCANS` set, it is the top 50 across the most-liquid slice actually scanned. The notes always say which.
-- **Stale copy in two places.** The frontend tab still reads "Market (S&P 500 + ETFs)" (`frontend/index.html:18`) and the `app/market.py` module docstring still says "curated universe," both left over from before the OCC universe landed. The behavior is correct; the labels are behind.
+- **An unknown `side` used to widen to "both".** `side` is now validated at the API boundary (`calls`/`put`/`all` aliases normalize; anything else is a 422) so a typo can no longer return the whole board as if it were the request. The provider-level `filter_side` raises `UnknownSide` instead of defaulting to "both".
 - **The two providers do not fail the same way.** `cboe.py` retries 403/429/5xx with jittered backoff and raises `FeedError`; `tradier.py` retries 429 only and lets everything else surface as `httpx.HTTPStatusError`. Callers that catch `FeedError` will not catch a Tradier 5xx. Unifying the two is on the roadmap.
 - **Config drift.** `.env.example` ships `MAX_CHAIN_SCANS=1500` while the built-in default in `config.py` is `2000`. The example is the lighter, faster setting.
 - **This is a calculator, not a broker.** It places no orders and connects to no execution venue. A letter grade summarizes seven measurable properties of a contract at a point in time; it is not advice and none of the output should be read as a recommendation.
 
-Roadmap, in rough priority order: `TestClient` coverage of the five endpoints, an American-option pricer (binomial or Bjerksund-Stensland) for the early-exercise cases, and persisting sweep results so a completed board survives a restart.
+Roadmap, in rough priority order: an American-option pricer (binomial or Bjerksund-Stensland) for the early-exercise cases, persisting sweep results so a completed board survives a restart, and unifying the two providers' failure surfaces.
 
 ---
 
