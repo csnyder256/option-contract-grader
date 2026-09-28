@@ -210,6 +210,12 @@ uvicorn app.api:app --reload
 # open http://localhost:8000
 ```
 
+A static preview of the interface is published at
+<https://csnyder256.github.io/option-contract-grader/>, which is the URL in this
+repo's About box. That is `docs/index.html`, a self-contained mockup with the
+numbers hardcoded: it is a look at the layout, not a running instance. The
+Quickstart above is the real thing.
+
 ### Windows, no terminal
 
 1. Double-click `setup.bat` once. Creates `.venv`, installs requirements, copies `.env.example` to `.env`.
@@ -278,7 +284,7 @@ Everything runs offline. No network access, no mocking library, no recorded-cass
 
 Roughly a 1:4 test-to-application line ratio.
 
-**Gaps, named honestly:** there are no HTTP-level tests of the five FastAPI endpoints (no `TestClient`), and no tests of the frontend JavaScript.
+**Gaps, named honestly:** there are no tests of the frontend JavaScript. HTTP-level coverage of the endpoints is partial: `/health`, `/key`, `/scan`, and `/market/scan` are driven through `TestClient`, while `/market/status` is exercised only by the `test_market.py` sweep tests calling `market_status()` directly.
 
 ---
 
@@ -299,17 +305,18 @@ This repo is a sanitized copy of a working local install. The exclusions are enf
 
 Working and used. The version string in `app/api.py` is `0.2.0`. Honest caveats:
 
-- **No packaging and no CI.** There is no `pyproject.toml`, no `setup.py`, no lockfile, and no `.github/` directory. The test number above is one run locally in a clean venv, not one a service verified.
+- **No packaging.** There is no `pyproject.toml`, no `setup.py`, and no lockfile. There IS CI now: `.github/workflows/ci.yml` runs `pytest -q` on Python 3.12 for every push to `main` and every pull request, and `.github/dependabot.yml` keeps the five runtime deps and the CI actions current. The test number above is still one local run in a clean venv, not a number a service published.
 - **BSM is European; US equity options are American.** Inverting a European model against an American premium is an approximation. It is a good one for the non-dividend, non-deep-ITM majority of the board, and it is wrong at the edges. Early exercise is not modeled.
 - **The free feeds are unofficial.** The CBOE delayed-quote CDN and the Yahoo chart endpoint are public but undocumented, and they can change or start rate-limiting without notice. That is why the retry, the backoff, and the failure counting exist.
 - **Tradier sandbox is still delayed** and serves no Greeks. Only `TRADIER_ENV=production` on a brokerage account is real-time.
 - **"Top 50 across the market" is bounded by the scan budget.** With `MAX_CHAIN_SCANS` set, it is the top 50 across the most-liquid slice actually scanned. The notes always say which.
-- **Stale copy in two places.** The frontend tab still reads "Market (S&P 500 + ETFs)" (`frontend/index.html:18`) and the `app/market.py` module docstring still says "curated universe," both left over from before the OCC universe landed. The behavior is correct; the labels are behind.
+- **Stale copy in one place.** The `app/market.py` module docstring still says "curated universe," left over from before the OCC universe landed. The behavior is correct; the label is behind. (The frontend tab used to be the other one; it now reads "Market (full optionable universe)".)
 - **The two providers do not fail the same way.** `cboe.py` retries 403/429/5xx with jittered backoff and raises `FeedError`; `tradier.py` retries 429 only and lets everything else surface as `httpx.HTTPStatusError`. Callers that catch `FeedError` will not catch a Tradier 5xx. Unifying the two is on the roadmap.
 - **Config drift.** `.env.example` ships `MAX_CHAIN_SCANS=1500` while the built-in default in `config.py` is `2000`. The example is the lighter, faster setting.
+- **`MAX_RESULTS` is documented and wired to nothing.** `.env.example` says it caps "max scored contracts returned by a single scan," and `settings.max_results` is read in `app/config.py`, but no code path ever references it: `/scan` returns `req.limit` (`ScanRequest.limit`, default 50, max 500) and the sweep returns `limit`. Turning the knob changes nothing. Either wire it or drop it; today it is a documented lie, which is why it is listed here rather than quietly left out.
 - **This is a calculator, not a broker.** It places no orders and connects to no execution venue. A letter grade summarizes seven measurable properties of a contract at a point in time; it is not advice and none of the output should be read as a recommendation.
 
-Roadmap, in rough priority order: `TestClient` coverage of the five endpoints, an American-option pricer (binomial or Bjerksund-Stensland) for the early-exercise cases, and persisting sweep results so a completed board survives a restart.
+Roadmap, in rough priority order: an American-option pricer (binomial or Bjerksund-Stensland) for the early-exercise cases, persisting sweep results so a completed board survives a restart, and reconciling the Tradier failure contract with the CBOE `FeedError` one.
 
 ---
 

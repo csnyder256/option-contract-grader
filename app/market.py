@@ -1,4 +1,4 @@
-"""Market-wide screener: sweep a curated universe (S&P 500 + ETFs) and return the
+"""Market-wide screener: sweep the optionable universe and return the
 Top N contracts across the market.
 
 Pipeline (the README's "The market sweep" section documents the same four stages):
