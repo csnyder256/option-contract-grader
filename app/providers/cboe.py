@@ -310,10 +310,10 @@ class CboeProvider(OptionsDataProvider):
         for a malformed or unknown symbol. The *options* path already checked
         HTTP status before parsing (``_fetch_options`` has always compared
         ``resp.status_code == 200`` and raised a typed ``FeedError`` when no
-        candidate spelling returned one). The ``_chart_json`` path did not: it
-        called ``resp.json()`` directly and let a JSON decode failure raise a
-        bare ``ValueError``. This helper gives both paths the same status check,
-        the same unparseable-body guard, and the same non-object shape guard.
+        candidate spelling returned one). ``_chart_json`` also already checked
+        non-200 status before calling ``resp.json()``. The new shared helper
+        preserves those checks and additionally converts JSON decode failures
+        and non-object bodies to the same typed ``FeedError`` contract.
         """
         resp = self._request_with_retry(url, params=params, symbol=symbol)
         self.check_status(resp, symbol, what)

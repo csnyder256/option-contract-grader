@@ -316,11 +316,11 @@ Roadmap, in rough priority order: an American-option pricer (binomial or Bjerksu
 
 ## Resolved
 
-- **A feed failure no longer reads as an empty board.** A non-200, an HTML body at HTTP 200, or a JSON non-object at HTTP 200 used to parse into zero expirations and return `200` with "No contracts matched your filters". All three are now a `FeedError` that `/scan` maps to `502`, naming the reason; a well-formed response with zero options is still a normal empty board. Verified through the real app with `TestClient`.
+- **Feed failures have a consistent HTTP error contract.** Non-200 status, an unparseable body, and JSON non-object bodies raise a typed `FeedError`, which `/scan` maps to HTTP 502 with the reason. Previously, Tradier could expose untyped `HTTPStatusError` or `ValueError` failures, and Yahoo chart decoding could expose `ValueError`. The first version of this branch also collapsed Tradier non-object JSON to an empty object; the follow-up corrects that regression. A healthy empty chain remains HTTP 200. These HTTP outcomes are covered through the real app with `TestClient`.
 - **IV history cannot read the future.** `get_iv_history` and `snapshot_count` exclude rows dated after today, so a phantom future snapshot can no longer move IV rank or percentile.
 - **An impossible filter is rejected, not answered.** Inverted expiration, premium, price, and DTE ranges, and a whitespace-only ticker, return `422` with the specific mismatch instead of an empty result set.
 
-**Not fixed by this pass, despite an earlier draft of this file saying so:** the crossed-book claim was wrong. `has_two_sided_market` already required `ask >= bid` on `main` before this branch existed, so there was no crossed-book bug to fix here; what this pass adds is regression coverage (crossed, one-sided, and locked markets). The same is true of the CBOE options path, which already compared HTTP status before parsing — only the Yahoo chart path lacked it. Both corrections are recorded rather than quietly dropped.
+**Not fixed by this pass, despite an earlier draft of this file saying so:** the crossed-book claim was wrong. `has_two_sided_market` already required `ask >= bid` on `main` before this branch existed, so there was no crossed-book bug to fix here; what this pass adds is regression coverage (crossed, one-sided, and locked markets). Both the CBOE options and Yahoo chart paths already checked non-200 HTTP status before parsing. The shared helper adds typed JSON decoding and shape errors; the existing status checks are preserved. Both corrections are recorded rather than quietly dropped.
 
 ---
 
