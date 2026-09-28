@@ -9,6 +9,12 @@ cross-check and compute our own from the real-time bid/ask.
 The JSON-parsing logic is split into pure module functions so it can be tested
 offline against recorded fixtures (see tests/test_tradier.py).
 
+Failure contract: HTTP 429 is retried with the server's ``Retry-After`` honored
+(delta-seconds or HTTP-date) and clamped to ``FEED_BACKOFF_CAP``; when the
+retries are exhausted the call raises the same typed ``FeedError`` the CBOE
+provider raises, naming the symbol. Other HTTP, transport, and malformed JSON failures also surface as typed
+``FeedError`` values, so sweeps can count them without treating them as empty data.
+
 Docs: https://docs.tradier.com/reference (markets/options/chains, expirations,
 quotes, history) and https://docs.tradier.com/docs/rate-limiting
 """
@@ -17,8 +23,9 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from datetime import date, datetime
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 
@@ -60,6 +67,54 @@ def _to_int(value: Any, default: int = 0) -> int:
 
 def _parse_date(value: str) -> date:
     return datetime.strptime(value, "%Y-%m-%d").date()
+
+
+def parse_retry_after(value: Optional[str], now: Optional[datetime] = None) -> Optional[float]:
+    """A ``Retry-After`` header as a non-negative delay in seconds, or None.
+
+    RFC 9110 allows the header in two forms and both are legal in the wild:
+    delta-seconds (``"120"``) or an HTTP-date
+    (``"Wed, 21 Oct 2026 07:28:00 GMT"``). Only the first used to be handled -
+    the date form reached ``float()``, raised ``ValueError``, and killed the
+    caller's retry loop instead of backing off. A value that parses as neither
+    returns None so the caller can use its own schedule, and a date already in
+    the past returns 0.0 (``"retry now"``) rather than None.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return max(0.0, float(text))
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:  # an HTTP-date without a zone is UTC by convention
+        when = when.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    return max(0.0, (when - now).total_seconds())
+
+
+def _symbol_hint(params: Optional[Dict[str, Any]]) -> str:
+    """Best-effort symbol label for a failed market-data call.
+
+    ``/markets/quotes`` takes either ``symbol`` (one) or ``symbols`` (a
+    comma-separated list); a rate-limit error should name the first ticker
+    rather than the URL, because that is what the sweep reports and counts.
+    """
+    for key in ("symbol", "symbols"):
+        raw = (params or {}).get(key)
+        if raw:
+            first = str(raw).split(",")[0].strip()
+            if first:
+                return first
+    return "tradier"
 
 
 def parse_quote(payload: Dict[str, Any], symbol: str, default_q: float = 0.0) -> Quote:
@@ -215,50 +270,48 @@ class TradierProvider(OptionsDataProvider):
                 time.sleep(sleep_for)
         self._req_times.append(time.monotonic())
 
-    def _get_raw(self, path: str, params: Dict[str, Any], retries: int = 3):
-        """GET with the throttle + 429 backoff; returns the raw response.
+    def _retry_delay(self, attempt: int, retry_after: Optional[str]) -> float:
+        """Honor delta-seconds and HTTP-date, bounded by the feed backoff cap."""
+        wait = settings.feed_backoff_base * (2 ** attempt)
+        parsed = parse_retry_after(retry_after)
+        if parsed is not None:
+            wait = parsed
+        return max(0.0, min(wait, settings.feed_backoff_cap))
 
-        The caller decides how to interpret the body, so a non-200 can become a
-        typed FeedError instead of an unhandled httpx exception.
-        """
-        resp = None
+    def _request_raw(
+        self, send: Callable[[], httpx.Response], params: Dict[str, Any], retries: int,
+    ) -> httpx.Response:
+        """Shared transport; callers retain the typed JSON failure contract."""
         for attempt in range(retries + 1):
             self._throttle()
-            resp = self._client.get(path, params=params)
+            try:
+                resp = send()
+            except httpx.RequestError as exc:
+                raise FeedError(_symbol_hint(params), "market-data transport failed") from exc
             if resp.status_code == 429:
-                # Honor the server's hint if present, else exponential backoff.
-                retry_after = resp.headers.get("Retry-After")
-                wait = float(retry_after) if retry_after else min(30.0, 2.0 ** attempt)
                 if attempt < retries:
-                    time.sleep(wait)
+                    time.sleep(self._retry_delay(attempt, resp.headers.get("Retry-After")))
                     continue
+                raise FeedError(_symbol_hint(params),
+                                f"HTTP 429 after {attempt + 1} tries (rate limited)")
             return resp
-        return resp  # pragma: no cover - loop always returns
+        raise ValueError("retries must be non-negative")
+
+    def _get_raw(self, path: str, params: Dict[str, Any], retries: int = 3):
+        return self._request_raw(lambda: self._client.get(path, params=params), params, retries)
+
+    def _post_raw(self, path: str, data: Dict[str, Any], retries: int = 3):
+        return self._request_raw(lambda: self._client.post(path, data=data), data, retries)
 
     def _get(self, path: str, params: Dict[str, Any], retries: int = 3,
              symbol: str = "") -> Dict[str, Any]:
-        resp = self._get_raw(path, params, retries)
-        return self._parse_json(resp, symbol, path)
-
-    def _post_raw(self, path: str, data: Dict[str, Any], retries: int = 3):
-        """POST with the same throttle + 429 backoff; returns the raw response."""
-        resp = None
-        for attempt in range(retries + 1):
-            self._throttle()
-            resp = self._client.post(path, data=data)
-            if resp.status_code == 429:
-                retry_after = resp.headers.get("Retry-After")
-                wait = float(retry_after) if retry_after else min(30.0, 2.0 ** attempt)
-                if attempt < retries:
-                    time.sleep(wait)
-                    continue
-            return resp
-        return resp  # pragma: no cover - loop always returns
+        return self._parse_json(self._get_raw(path, params, retries),
+                                symbol or _symbol_hint(params), path)
 
     def _post(self, path: str, data: Dict[str, Any], retries: int = 3,
               symbol: str = "") -> Dict[str, Any]:
-        resp = self._post_raw(path, data, retries)
-        return self._parse_json(resp, symbol, path)
+        return self._parse_json(self._post_raw(path, data, retries),
+                                symbol or _symbol_hint(data), path)
 
     # -- provider interface -----------------------------------------------
     def _parse_json(self, resp, symbol: str = "", what: str = "request") -> Dict[str, Any]:

@@ -205,6 +205,7 @@ def run_market_sweep(params: dict, provider, store, progress_cb,
     priced: Dict[str, Tuple[float, Optional[float]]] = {}
     price_failed: List[str] = []
     uncached: List[str] = []
+    batch_error: Optional[str] = None
     for sym in candidates:
         cached = store.get_underlying_fresh(sym, ttl)
         if cached is not None and cached[0] and cached[0] > 0:
@@ -219,8 +220,11 @@ def run_market_sweep(params: dict, provider, store, progress_cb,
         # filled in for the survivors only, in Stage 1b.
         try:
             quotes = provider.get_quotes_batch(uncached)
-        except Exception:
+        except Exception as e:
+            # A failed batch call is not "these names have no quote" - say which
+            # it was, or the note blames a rate limit that may never have happened.
             quotes = {}
+            batch_error = str(e).strip() or type(e).__name__
         for sym in uncached:
             q = quotes.get(sym.upper())
             if q is not None and q.last and q.last > 0:
@@ -353,6 +357,11 @@ def run_market_sweep(params: dict, provider, store, progress_cb,
         + (f" ({len(price_failed)} unpriced - rate-limited or no data)" if price_failed else "")
         + "."
     )
+    if batch_error:
+        notes.append(
+            f"Batched quote pass failed ({batch_error}); its {len(uncached)} name(s) "
+            f"went unpriced this sweep."
+        )
     if budget_note:
         notes.append(budget_note)
     scanned_desc = f"{len(in_band)} names scanned" + (
