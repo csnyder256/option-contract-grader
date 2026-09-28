@@ -212,6 +212,12 @@ uvicorn app.api:app --reload
 # open http://localhost:8000
 ```
 
+A static preview of the interface is published at
+<https://csnyder256.github.io/option-contract-grader/>, which is the URL in this
+repo's About box. That is `docs/index.html`, a self-contained mockup with the
+numbers hardcoded: it is a look at the layout, not a running instance. The
+Quickstart above is the real thing.
+
 ### Windows, no terminal
 
 1. Double-click `setup.bat` once. Creates `.venv`, installs requirements, copies `.env.example` to `.env`.
@@ -313,6 +319,7 @@ Working and used. The version string in `app/api.py` is `0.2.0`. Honest caveats:
 - **Stale copy is now cleaned up.** The frontend tab was relabeled from "Market (S&P 500 + ETFs)" to "Market (full optionable universe)" in this pass, and the `app/market.py` module docstring's "curated universe" was corrected at the same time. Both leftovers predated the OCC universe landing; the behavior was already correct, only the labels were behind.
 - **The two providers now fail the same way, from different transports.** Both raise `FeedError` for a non-200, an unparseable body, or an `errors` block, after their own retry policies are exhausted. `cboe.py` retries 403/429/5xx with jittered backoff; `tradier.py` retries 429 only. The *retry* policies still differ (documented above); the error *contract* no longer does.
 - **Config drift.** `.env.example` ships `MAX_CHAIN_SCANS=1500` while the built-in default in `config.py` is `2000`. The example is the lighter, faster setting.
+- **`MAX_RESULTS` is documented and wired to nothing.** `.env.example` says it caps "max scored contracts returned by a single scan," and `settings.max_results` is read in `app/config.py`, but no code path ever references it: `/scan` returns `req.limit` (`ScanRequest.limit`, default 50, max 500) and the sweep returns `limit`. Turning the knob changes nothing. Either wire it or drop it; today it is a documented lie, which is why it is listed here rather than quietly left out.
 - **This is a calculator, not a broker.** It places no orders and connects to no execution venue. A letter grade summarizes seven measurable properties of a contract at a point in time; it is not advice and none of the output should be read as a recommendation.
 
 Roadmap, in rough priority order: an American-option pricer (binomial or Bjerksund-Stensland) for the early-exercise cases, persisting sweep results so a completed board survives a restart, and a shared retry policy so the two providers stop differing in backoff as well as transport.
