@@ -16,6 +16,12 @@ from app.models import OHLC
 
 TRADING_DAYS = 252
 
+# Minimum daily ATM-IV observations before IV Rank/Percentile are reported.
+# Below this the rank is a percentile of noise, so the engine says "warming up"
+# and the Volatility sub-score falls back to pure IV-vs-HV (README: IV Rank is
+# bootstrapped from nothing).
+IV_RANK_MIN_OBSERVATIONS = 10
+
 
 def log_returns(closes: Sequence[float]) -> List[float]:
     out: List[float] = []
@@ -129,12 +135,17 @@ def iv_vs_hv_ratio(iv: Optional[float], hv: Optional[float]) -> Optional[float]:
     return iv / hv
 
 
-def iv_rank(current: Optional[float], history: Sequence[float]) -> Optional[float]:
+def iv_rank(
+    current: Optional[float],
+    history: Sequence[float],
+    n: int = IV_RANK_MIN_OBSERVATIONS,
+) -> Optional[float]:
     """IV Rank (0-100): position of current IV within its historical [min, max].
 
-    Returns None if there isn't enough history or the range is degenerate.
+    Returns None if there isn't enough history (< `n` observations) or the range
+    is degenerate.
     """
-    if current is None or len(history) < 10:
+    if current is None or len(history) < n:
         return None
     lo, hi = min(history), max(history)
     if hi - lo < 1e-9:
@@ -142,9 +153,13 @@ def iv_rank(current: Optional[float], history: Sequence[float]) -> Optional[floa
     return max(0.0, min(100.0, (current - lo) / (hi - lo) * 100.0))
 
 
-def iv_percentile(current: Optional[float], history: Sequence[float]) -> Optional[float]:
+def iv_percentile(
+    current: Optional[float],
+    history: Sequence[float],
+    n: int = IV_RANK_MIN_OBSERVATIONS,
+) -> Optional[float]:
     """IV Percentile (0-100): share of historical days with IV below current."""
-    if current is None or len(history) < 10:
+    if current is None or len(history) < n:
         return None
     below = sum(1 for v in history if v < current)
     return below / len(history) * 100.0

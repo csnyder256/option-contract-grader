@@ -203,13 +203,16 @@ def run_market_sweep(params: dict, provider, store, progress_cb,
     # --- Stage 1: prices (TTL cache -> batch or concurrent) ---------------
     progress_cb("prices", 0, len(candidates))
     priced: Dict[str, Tuple[float, Optional[float]]] = {}
+    seen_at: Dict[str, str] = {}      # symbol -> ISO updated_at of the cached row
     price_failed: List[str] = []
     uncached: List[str] = []
     batch_error: Optional[str] = None
     for sym in candidates:
-        cached = store.get_underlying_fresh(sym, ttl)
+        cached = store.get_underlying_fresh(sym, ttl, with_timestamp=True)
         if cached is not None and cached[0] and cached[0] > 0:
-            priced[sym] = cached
+            priced[sym] = (cached[0], cached[1])
+            if cached[2]:
+                seen_at[sym] = cached[2]
         else:
             uncached.append(sym)
     done = len(priced)
@@ -297,7 +300,10 @@ def run_market_sweep(params: dict, provider, store, progress_cb,
                 price = priced[sym][0]
                 priced[sym] = (price, hv)
                 if hv is not None:
-                    store.save_underlying(sym, price, hv, today)
+                    # Keep the ORIGINAL observation time: this row was already
+                    # fetched, so re-stamping it would falsely present an old
+                    # price as freshly observed.
+                    store.save_underlying(sym, price, hv, today, observed_at=seen_at.get(sym))
 
     # --- Stage 3: fetch + score chains for survivors ----------------------
     filters = ScanFilters(

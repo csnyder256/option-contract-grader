@@ -189,9 +189,13 @@ Details that matter:
 
 ### IV Rank is bootstrapped from nothing
 
-Neither CBOE nor Tradier serves historical implied volatility, so the app builds its own. Each scan solves the ATM IV for the symbol and snapshots it into SQLite, one row per symbol per day. `iv_rank()` returns `None` below 10 observations, at which point the Volatility sub-score falls back to pure IV-vs-HV and the API emits a note: `IV Rank is warming up (N day(s) of history; needs ~10)`. Rank gets better the longer you run it, and it is honest about not having it yet.
+Neither CBOE nor Tradier serves historical implied volatility, so the app builds its own. Each scan solves the ATM IV for the symbol and snapshots it into SQLite, one row per symbol per day — and that day's row is written **once**. A later scan on the same day cannot rewrite it: the day's ATM IV is the first one observed, not whichever scan happened to run last. `iv_rank()` returns `None` below 10 observations, at which point the Volatility sub-score falls back to pure IV-vs-HV and the API emits a note: `IV Rank is warming up (N day(s) of history; needs ~10)`. Rank gets better the longer you run it, and it is honest about not having it yet.
+
+The first-write-wins rule matters more than it looks. IV Rank and IV Percentile read this series as the *historical distribution*, so a day that any later scan can overwrite is not history at all — it is grader quality, and it biases exactly the tail the percentile exists to measure. A spike day that gets re-scanned with a calmer IV silently vanishes from the sample. `test_intraday_rescan_cannot_rewrite_a_completed_days_iv` records a 12-day series containing a 0.55 spike on day 3, re-scans day 3 at 0.21, and asserts the spike survives and the resulting rank matches the true series. `Store.save_iv_snapshot()` therefore uses `ON CONFLICT DO NOTHING` rather than `INSERT OR REPLACE`, and returns whether it recorded the day.
 
 One bug fix worth preserving lives in `Store.get_underlying_fresh()`: cache freshness is keyed on an `updated_at` UTC timestamp, not on a calendar `snap_date`. A TTL spanning midnight therefore still finds yesterday's row. `test_underlying_cache_ttl_respects_age_and_ignores_snap_date` inserts a row stamped with yesterday's date but a one-hour-old timestamp and asserts it is still a cache hit. The docstring calls it the cross-midnight fix for the intermittent empty-board bug.
+
+The same timestamp is the cache's *observation* time, so the sweep must not restamp a row it merely re-touched. `get_underlying_fresh(..., with_timestamp=True)` returns the row's `updated_at`, and Stage 1b passes it back through `save_underlying(..., observed_at=...)` when it fills in HV for a name whose price was already on hand. Without that, re-touching a name would present an old price as freshly observed and reset its 12-hour TTL — `test_sweep_does_not_restamp_a_price_it_already_had` locks it down.
 
 ---
 
