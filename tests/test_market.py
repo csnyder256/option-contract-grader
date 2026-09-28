@@ -193,6 +193,31 @@ def test_underlying_cache_ttl_respects_age_and_ignores_snap_date():
     assert s.get_underlying_fresh("YST", 12.0) == (42.0, 0.20)
 
 
+def test_sweep_reports_a_failed_batch_quote_pass(monkeypatch):
+    # A batch quote request that fails is not the same fact as "these names have
+    # no quote". Pre-fix the reason was swallowed and the note guessed.
+    from app.providers.base import FeedError
+
+    class BatchQuoteFailProvider(FakeProvider):
+        supports_batch_quotes = True
+
+        def get_quotes_batch(self, symbols):
+            raise FeedError("MSFT", "HTTP 429 after 4 tries (rate limited)")
+
+    prices = {f"B{i}": 50.0 + i for i in range(4)}
+    monkeypatch.setattr(market, "_universe_cache", list(prices.keys()))
+
+    top, notes = market.run_market_sweep(
+        {"side": "both", "limit": 50}, BatchQuoteFailProvider(prices),
+        Store(":memory:"), lambda *a: None,
+    )
+
+    assert top == []                                        # nothing was priced
+    assert any("Batched quote pass failed" in n for n in notes)
+    assert any("HTTP 429 after 4 tries" in n for n in notes)  # the feed's own reason
+    assert any("its 4 name(s)" in n for n in notes)           # and how much it cost
+
+
 def test_background_sweep_completes(monkeypatch):
     prices = {"AAA": 30.0, "BBB": 75.0}
     monkeypatch.setattr(market, "_universe_cache", list(prices.keys()))

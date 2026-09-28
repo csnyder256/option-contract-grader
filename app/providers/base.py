@@ -32,6 +32,31 @@ class OptionsDataProvider(ABC):
     # get_quotes_batch(); the market sweep uses it for a cheap Stage-1 pre-pass.
     supports_batch_quotes: bool = False
 
+    def check_status(self, resp, symbol: str, what: str = "request") -> None:
+        """Raise FeedError unless `resp` is a usable HTTP 200.
+
+        Shared HTTP contract for every provider. Before this existed each
+        provider decided for itself whether a non-200 mattered, and the ones
+        that did not check quietly handed a JSON error body to their own parser.
+        That parser then found no ``data`` / ``chart`` / ``quotes`` key, returned
+        an empty result, and the caller could not tell "this symbol has no
+        options" from "the feed rejected us". This keeps the distinction: a
+        non-200 is a counted, surfaced failure.
+
+        Statuses already exhausted by the provider's own retry policy arrive
+        here as-is; a 404 stays a "no such symbol" report rather than an empty
+        chain. This helper is a new shared contract, and it is currently used by
+        CBOE only. Tradier keeps its own equivalent check inside
+        ``TradierProvider._parse_json`` (it raises ``FeedError`` there rather
+        than calling this method), so the two providers agree on the *outcome*
+        -- a typed ``FeedError`` for a non-200 -- while still differing in
+        transport and retry policy.
+        """
+        code = getattr(resp, "status_code", None)
+        if code == 200:
+            return
+        raise FeedError(symbol or "?", f"{what}: HTTP {code}")
+
     @abstractmethod
     def get_quote(self, symbol: str) -> Quote:
         """Latest underlying price (and dividend yield if available)."""
@@ -81,12 +106,59 @@ class OptionsDataProvider(ABC):
         return out
 
 
+class UnknownSide(ValueError):
+    """A `side` value that is not one of calls / puts / both.
+
+    Callers must not treat an unrecognized side as "both": a typo like
+    "callz" would then silently return the whole board and the user would
+    read a plausible-looking result for a request that was never made.
+    """
+
+    def __init__(self, side: object):
+        self.side = side
+        super().__init__(
+            f"side must be one of 'calls', 'puts', or 'both' (got {side!r})"
+        )
+
+
+# Canonical side spellings accepted from callers, mapped to the canonical form.
+_SIDE_ALIASES = {
+    "calls": "calls",
+    "call": "calls",
+    "puts": "puts",
+    "put": "puts",
+    "both": "both",
+    "all": "both",
+}
+
+
+def normalize_side(side: object) -> str:
+    """Return the canonical side ('calls' | 'puts' | 'both').
+
+    Accepts call/put/all aliases and case-insensitive spellings. None and blank
+    strings retain the helper's existing 'both' default; other unknown values
+    raise UnknownSide. HTTP request fields are strings, so JSON null is rejected
+    by request validation before this helper runs.
+    """
+    if side is None or (isinstance(side, str) and side.strip() == ""):
+        return "both"
+    key = str(side).strip().lower()
+    try:
+        return _SIDE_ALIASES[key]
+    except KeyError:
+        raise UnknownSide(side) from None
+
+
 def filter_side(option_type: OptionType, side: str) -> bool:
-    side = (side or "both").lower()
-    if side in ("both", "all"):
+    """True if `option_type` is in the requested `side`.
+
+    An unknown side raises UnknownSide rather than widening to "both" (see
+    normalize_side). Accepts the alias spellings ("call"/"put"/"all").
+    """
+    canonical = normalize_side(side)
+    if canonical == "both":
         return True
-    if side in ("calls", "call"):
+    if canonical == "calls":
         return option_type == OptionType.CALL
-    if side in ("puts", "put"):
-        return option_type == OptionType.PUT
-    return True
+    return option_type == OptionType.PUT
+

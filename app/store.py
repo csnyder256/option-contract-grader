@@ -6,6 +6,15 @@ underlying's current ATM IV (once per symbol per day). After enough days accrue,
 IV Rank/Percentile become available; until then the engine falls back to the
 IV-vs-HV signal and the UI labels rank as "warming up".
 
+**A day's snapshot is written once, not overwritten.** The first scan of a symbol
+on a given day records that day's ATM IV; every later scan the same day is a
+no-op. The alternative -- `INSERT OR REPLACE` on `(symbol, snap_date)` -- let any
+later scan silently rewrite a day that had already been observed, which is not a
+sample of the market's history but a sample of whichever scan ran last. Since
+IV Rank/Percentile read this series as the historical distribution, that turned
+the percentile input into grader quality. First-write-wins keeps the intended
+"one row per symbol per day" contract honest.
+
 The ``underlying_cache`` table memoises each name's price + realized vol for the
 day so a market-wide sweep can prune by price band without re-fetching every name
 on every refresh.
@@ -16,6 +25,7 @@ threads can share one connection safely.
 
 from __future__ import annotations
 
+import math
 import os
 import sqlite3
 import threading
@@ -68,26 +78,50 @@ class Store:
 
     # -- IV snapshots (for IV rank) ---------------------------------------
     def save_iv_snapshot(
-        self, symbol: str, atm_iv: float, snap_date: Optional[date] = None
-    ) -> None:
-        if atm_iv is None or atm_iv <= 0:
-            return
+        self,
+        symbol: str,
+        atm_iv: float,
+        snap_date: Optional[date] = None,
+    ) -> bool:
+        """Record `snap_date`'s ATM IV for `symbol` if that day is still unobserved.
+
+        First write wins: a later scan on the same day cannot rewrite a day that
+        has already been observed. Returns True when this call recorded the day
+        (so a caller can tell a fresh observation from a duplicate), False when
+        the day was already present.
+
+        """
+        if atm_iv is None or not math.isfinite(atm_iv) or atm_iv <= 0:
+            return False
         d = (snap_date or date.today()).isoformat()
+        # ON CONFLICT DO NOTHING (not OR REPLACE): the daily series must be
+        # append-only, or an intraday re-scan silently rewrites history.
         with self._lock:
-            self._conn.execute(
-                "INSERT OR REPLACE INTO iv_snapshots (symbol, snap_date, atm_iv) "
-                "VALUES (?, ?, ?)",
+            cur = self._conn.execute(
+                "INSERT INTO iv_snapshots (symbol, snap_date, atm_iv) "
+                "VALUES (?, ?, ?) ON CONFLICT(symbol, snap_date) DO NOTHING",
                 (symbol.upper(), d, float(atm_iv)),
             )
             self._conn.commit()
+            return cur.rowcount > 0
 
     def get_iv_history(self, symbol: str, lookback_days: int = 400) -> List[float]:
-        """Most recent `lookback_days` ATM-IV snapshots, oldest first."""
+        """Most recent `lookback_days` ATM-IV snapshots, oldest first.
+
+        Rows dated after today are excluded. They should not exist, but nothing
+        stops one landing here -- a caller passing an explicit ``snap_date``
+        ahead of the calendar, or a node with a skewed clock. ``iv_rank`` and
+        ``iv_percentile`` both derive the symbol's whole range and denominator
+        from this list, so a phantom future row distorts every score computed
+        from it. A future row is not history yet; excluding it costs one
+        comparison.
+        """
+        today = date.today().isoformat()
         with self._lock:
             cur = self._conn.execute(
-                "SELECT atm_iv FROM iv_snapshots WHERE symbol = ? "
+                "SELECT atm_iv FROM iv_snapshots WHERE symbol = ? AND snap_date <= ? "
                 "ORDER BY snap_date DESC LIMIT ?",
-                (symbol.upper(), lookback_days),
+                (symbol.upper(), today, lookback_days),
             )
             rows = [r[0] for r in cur.fetchall()]
         rows.reverse()
@@ -96,19 +130,27 @@ class Store:
     def snapshot_count(self, symbol: str) -> int:
         with self._lock:
             cur = self._conn.execute(
-                "SELECT COUNT(*) FROM iv_snapshots WHERE symbol = ?", (symbol.upper(),)
+                "SELECT COUNT(*) FROM iv_snapshots WHERE symbol = ? AND snap_date <= ?",
+                (symbol.upper(), date.today().isoformat()),
             )
             return int(cur.fetchone()[0])
 
     # -- Underlying price/HV cache (for the market sweep) -----------------
     def save_underlying(
         self, symbol: str, price: float, hv: Optional[float],
-        snap_date: Optional[date] = None,
+        snap_date: Optional[date] = None, observed_at: Optional[str] = None,
     ) -> None:
-        if price is None or price <= 0:
+        """Cache a name's price/HV for `snap_date`.
+
+        `observed_at` (an ISO UTC timestamp) lets a caller that is re-caching a
+        price it already held keep the ORIGINAL observation time, so re-touching
+        a name does not restamp it as freshly fetched. When omitted the row is
+        stamped now, which is correct for a genuinely new fetch.
+        """
+        if price is None or not math.isfinite(price) or price <= 0:
             return
         d = (snap_date or date.today()).isoformat()
-        now = datetime.now(timezone.utc).isoformat()
+        now = observed_at or datetime.now(timezone.utc).isoformat()
         with self._lock:
             self._conn.execute(
                 "INSERT OR REPLACE INTO underlying_cache "
@@ -134,12 +176,16 @@ class Store:
         return (row[0], row[1])
 
     def get_underlying_fresh(
-        self, symbol: str, max_age_hours: float
-    ) -> Optional[Tuple[float, Optional[float]]]:
+        self, symbol: str, max_age_hours: float, with_timestamp: bool = False
+    ):
         """Return (price, hv) if the most recent snapshot is within `max_age_hours`.
 
         Keyed by `updated_at` (NOT snap_date) so a TTL that spans midnight still
         finds yesterday's row - the fix for the intermittent empty-board bug.
+
+        Pass ``with_timestamp=True`` to also get the row's ISO `updated_at`, so a
+        caller re-caching a name it already held can preserve the original
+        observation time instead of restamping it (see ``save_underlying``).
         """
         with self._lock:
             cur = self._conn.execute(
@@ -154,9 +200,13 @@ class Store:
             ts = datetime.fromisoformat(row[2])
         except ValueError:
             return None
-        age_h = (datetime.now(timezone.utc) - ts).total_seconds() / 3600.0
-        if age_h > max_age_hours:
+        if ts.tzinfo is None:
             return None
+        age_h = (datetime.now(timezone.utc) - ts).total_seconds() / 3600.0
+        if age_h < 0 or age_h > max_age_hours:
+            return None
+        if with_timestamp:
+            return (row[0], row[1], row[2])
         return (row[0], row[1])
 
     def close(self) -> None:

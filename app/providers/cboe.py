@@ -289,9 +289,41 @@ class CboeProvider(OptionsDataProvider):
         for sym in candidates:
             resp = self._request_with_retry(self.OPTIONS_URL.format(sym=sym), symbol=symbol)
             if resp.status_code == 200:
-                return resp.json()
+                try:
+                    payload = resp.json()
+                except ValueError as e:
+                    # A 200 with an HTML body (the CDN's error page) parses to
+                    # zero options, which reads downstream as "nothing listed".
+                    raise FeedError(symbol, "unparseable JSON response") from e
+                if not isinstance(payload, dict):
+                    raise FeedError(symbol, "unexpected JSON shape (not an object)")
+                return payload
             last_status = resp.status_code  # 404 -> try the next candidate spelling
         raise FeedError(symbol, f"no CBOE delayed-quote data (last HTTP {last_status})")
+
+    def _get_json(
+        self, url: str, params: Optional[dict] = None, symbol: str = "", what: str = "request"
+    ) -> Dict[str, Any]:
+        """GET a JSON endpoint, raising FeedError on any non-200 or bad body.
+
+        The CBOE delayed-quote CDN answers with an HTML error page (not JSON)
+        for a malformed or unknown symbol. The *options* path already checked
+        HTTP status before parsing (``_fetch_options`` has always compared
+        ``resp.status_code == 200`` and raised a typed ``FeedError`` when no
+        candidate spelling returned one). ``_chart_json`` also already checked
+        non-200 status before calling ``resp.json()``. The new shared helper
+        preserves those checks and additionally converts JSON decode failures
+        and non-object bodies to the same typed ``FeedError`` contract.
+        """
+        resp = self._request_with_retry(url, params=params, symbol=symbol)
+        self.check_status(resp, symbol, what)
+        try:
+            payload = resp.json()
+        except ValueError as e:
+            raise FeedError(symbol or url, "unparseable JSON response") from e
+        if not isinstance(payload, dict):
+            raise FeedError(symbol or url, "unexpected JSON shape (not an object)")
+        return payload
 
     def get_quote(self, symbol: str) -> Quote:
         return parse_cboe_quote(self._fetch_options(symbol), symbol, self.default_q)
@@ -305,12 +337,14 @@ class CboeProvider(OptionsDataProvider):
     def _chart_json(self, symbol: str, days: int) -> Dict[str, Any]:
         # Yahoo uses a dash for class shares (BRK.B -> BRK-B).
         url = self.YAHOO_URL.format(sym=symbol.upper().replace(".", "-"))
-        resp = self._request_with_retry(
-            url, params={"range": _yahoo_range(days), "interval": "1d"}, symbol=symbol
+        # Yahoo answers 404 for a delisted/invalid ticker; _get_json keeps that a
+        # counted FeedError instead of an empty history that reads as "flat stock".
+        return self._get_json(
+            url,
+            params={"range": _yahoo_range(days), "interval": "1d"},
+            symbol=symbol,
+            what="Yahoo chart",
         )
-        if resp.status_code != 200:  # e.g. 404 for a delisted/invalid ticker
-            raise FeedError(symbol, f"Yahoo chart HTTP {resp.status_code}")
-        return resp.json()
 
     def get_history(self, symbol: str, days: int = 60) -> List[OHLC]:
         return parse_yahoo_history(self._chart_json(symbol, days))

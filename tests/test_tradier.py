@@ -1,8 +1,12 @@
+import pytest
 """Offline tests for Tradier JSON parsing (no network)."""
 
-from datetime import date
+from datetime import date, datetime, timezone
+
+import httpx
 
 from app.models import OHLC, OptionType, Quote
+from app.providers.base import FeedError
 from app.providers.tradier import (
     TradierProvider,
     _as_list,
@@ -11,6 +15,7 @@ from app.providers.tradier import (
     parse_history,
     parse_quote,
     parse_quotes_batch,
+    parse_retry_after,
 )
 
 QUOTE = {"quotes": {"quote": {"symbol": "AAPL", "last": 190.5, "close": 189.0}}}
@@ -125,7 +130,7 @@ def test_get_quotes_batch_chunks_by_size(monkeypatch):
     p = TradierProvider(token="x")
     sent = []
 
-    def fake_post(path, data, retries=3):
+    def fake_post(path, data, retries=3, symbol=""):
         syms = data["symbols"].split(",")
         sent.append(syms)
         return {"quotes": {"quote": [{"symbol": s, "last": 10.0} for s in syms]}}
@@ -144,3 +149,130 @@ def test_get_price_and_history_combines_quote_and_history(monkeypatch):
     price, hist = p.get_price_and_history("AAPL")
     assert price == 123.0
     assert hist == bars
+
+
+# --- 429 retry policy ------------------------------------------------------- #
+
+_URL = "https://api.tradier.com/v1/markets/quotes"
+
+
+class _ScriptedClient:
+    """Stand-in for httpx.Client that replays a fixed list of responses."""
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls = 0
+
+    def _next(self):
+        self.calls += 1
+        if self.script:
+            return self.script.pop(0)
+        return _resp(200, payload={})
+
+    def get(self, path, params=None):
+        return self._next()
+
+    def post(self, path, data=None):
+        return self._next()
+
+
+def _resp(status, headers=None, payload=None):
+    # A real httpx.Response carries its request, which raise_for_status() needs.
+    return httpx.Response(
+        status, headers=headers, json=payload, request=httpx.Request("GET", _URL)
+    )
+
+
+def _scripted(monkeypatch, script, cap=None):
+    """Provider on scripted responses, with every sleep recorded not performed."""
+    import app.providers.tradier as tr
+
+    if cap is not None:
+        monkeypatch.setattr(tr.settings, "feed_backoff_cap", cap)
+    p = TradierProvider(token="x")
+    client = _ScriptedClient(script)
+    p._client = client
+    slept = []
+    monkeypatch.setattr(tr.time, "sleep", slept.append)
+    return p, slept, client
+
+
+def test_parse_retry_after_handles_both_legal_forms():
+    assert parse_retry_after("120") == 120.0
+    assert parse_retry_after(" 0 ") == 0.0
+    assert parse_retry_after("-5") == 0.0           # never a negative wait
+    assert parse_retry_after("soon") is None        # unusable -> caller's schedule
+    assert parse_retry_after("") is None
+    assert parse_retry_after(None) is None
+
+    now = datetime(2026, 10, 21, 7, 0, tzinfo=timezone.utc)
+    assert parse_retry_after("Wed, 21 Oct 2026 07:28:00 GMT", now=now) == 1680.0
+    assert parse_retry_after("Wed, 21 Oct 2026 06:00:00 GMT", now=now) == 0.0  # past -> now
+    assert parse_retry_after("21 Oct 2026 07:28:00", now=now) == 1680.0        # no zone -> UTC
+
+
+def test_429_with_http_date_retry_after_backs_off_instead_of_raising(monkeypatch):
+    # The header is legal as an HTTP-date. Pre-fix it reached float(), raised
+    # ValueError straight out of the retry loop, and the call died without a
+    # retry, without a wait, and without a typed error.
+    p, slept, client = _scripted(monkeypatch, [
+        _resp(429, {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}),
+        _resp(200, payload={"quotes": {"quote": {"symbol": "AAPL", "last": 10.0}}}),
+    ])
+    out = p._get("/v1/markets/quotes", {"symbols": "AAPL"})
+    assert out["quotes"]["quote"]["symbol"] == "AAPL"
+    assert client.calls == 2      # it retried
+    assert len(slept) == 1        # instead of dying on the header
+
+
+def test_429_retry_after_is_clamped_to_the_backoff_cap(monkeypatch):
+    # A response header must not be able to park a worker thread for an hour.
+    p, slept, _ = _scripted(monkeypatch, [
+        _resp(429, {"Retry-After": "3600"}),
+        _resp(200, payload={"ok": True}),
+    ], cap=12.0)
+    p._get("/v1/markets/quotes", {"symbols": "AAPL"})
+    assert slept == [12.0]
+
+
+def test_429_falls_back_to_exponential_backoff(monkeypatch):
+    p, slept, _ = _scripted(monkeypatch, [
+        _resp(429),                                    # no header at all
+        _resp(429, {"Retry-After": "not a delay"}),    # header, unusable
+        _resp(200, payload={"ok": True}),
+    ])
+    p._get("/v1/markets/quotes", {"symbols": "AAPL"})
+    assert slept == [1.0, 2.0]    # base * 2**attempt, default base 1.0
+
+
+def test_exhausted_429_raises_a_named_feed_error(monkeypatch):
+    p, slept, client = _scripted(monkeypatch, [_resp(429) for _ in range(4)])
+    try:
+        p._get("/v1/markets/quotes", {"symbols": "AAPL"})
+        raise AssertionError("expected FeedError")
+    except FeedError as e:
+        assert e.symbol == "AAPL"          # named, so the sweep can count it
+        assert "429" in e.reason
+    assert client.calls == 4               # retries=3 -> four attempts, then stop
+    assert len(slept) == 3                 # wait between attempts, none after the last
+
+
+def test_exhausted_429_names_the_symbol_on_the_batch_path(monkeypatch):
+    p, _, _ = _scripted(monkeypatch, [_resp(429) for _ in range(4)])
+    try:
+        p._post("/v1/markets/quotes", {"symbols": "MSFT,AMZN"})
+        raise AssertionError("expected FeedError")
+    except FeedError as e:
+        assert e.symbol == "MSFT"          # first ticker of the batch
+
+
+def test_non_429_error_status_is_a_counted_feed_error(monkeypatch):
+    p, _, _ = _scripted(monkeypatch, [_resp(503)])
+    with pytest.raises(FeedError, match="AAPL.*HTTP 503"):
+        p._get("/v1/markets/quotes", {"symbols": "AAPL"})
+
+
+def test_nonfinite_retry_after_uses_transport_backoff():
+    from app.providers.tradier import parse_retry_after
+    for value in ("NaN", "Inf", "-Inf"):
+        assert parse_retry_after(value) is None
