@@ -32,6 +32,31 @@ class OptionsDataProvider(ABC):
     # get_quotes_batch(); the market sweep uses it for a cheap Stage-1 pre-pass.
     supports_batch_quotes: bool = False
 
+    def check_status(self, resp, symbol: str, what: str = "request") -> None:
+        """Raise FeedError unless `resp` is a usable HTTP 200.
+
+        Shared HTTP contract for every provider. Before this existed each
+        provider decided for itself whether a non-200 mattered, and the ones
+        that did not check quietly handed a JSON error body to their own parser.
+        That parser then found no ``data`` / ``chart`` / ``quotes`` key, returned
+        an empty result, and the caller could not tell "this symbol has no
+        options" from "the feed rejected us". This keeps the distinction: a
+        non-200 is a counted, surfaced failure.
+
+        Statuses already exhausted by the provider's own retry policy arrive
+        here as-is; a 404 stays a "no such symbol" report rather than an empty
+        chain. This helper is a new shared contract, and it is currently used by
+        CBOE only. Tradier keeps its own equivalent check inside
+        ``TradierProvider._parse_json`` (it raises ``FeedError`` there rather
+        than calling this method), so the two providers agree on the *outcome*
+        -- a typed ``FeedError`` for a non-200 -- while still differing in
+        transport and retry policy.
+        """
+        code = getattr(resp, "status_code", None)
+        if code == 200:
+            return
+        raise FeedError(symbol or "?", f"{what}: HTTP {code}")
+
     @abstractmethod
     def get_quote(self, symbol: str) -> Quote:
         """Latest underlying price (and dividend yield if available)."""

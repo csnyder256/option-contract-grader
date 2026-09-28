@@ -73,6 +73,16 @@ class Contract:
 
     @property
     def has_two_sided_market(self) -> bool:
+        """A quotable market: a real bid, a real ask, and no cross.
+
+        A crossed book (``ask < bid``) is a stale or corrupted quote, not a
+        market: the two-sided path would compute a mid off the crossed pair and
+        report a negative bid/ask spread. The ``ask >= bid`` guard was already
+        here before this pass (so this property's behavior is unchanged); what
+        was missing was regression coverage, which
+        ``tests/test_failures_surface.py`` now pins alongside the one-sided and
+        locked cases.
+        """
         return self.bid > 0 and self.ask > 0 and self.ask >= self.bid
 
     @property

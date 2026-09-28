@@ -18,7 +18,7 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app import market
 from app.config import settings
@@ -120,6 +120,41 @@ class ScanRequest(BaseModel):
 
     _check_side = field_validator("side")(_validate_side)
 
+    @model_validator(mode="after")
+    def _check_request(self) -> "ScanRequest":
+        """Reject impossible requests up front instead of answering them badly.
+
+        Two shapes used to slip through. A whitespace-only ``ticker`` passed the
+        ``relevant`` check on the raw field and then reached the provider as an
+        empty symbol, which the CBOE path logs as a 404 and the caller sees as a
+        generic 502 -- a data-feed error for what is plainly a client error. And
+        an inverted range (``from`` after ``to``, or a premium floor above its
+        ceiling) selects zero expirations and returns an empty board, which
+        reads exactly like "this ticker has nothing worth buying". The filter
+        was self-defeating, not the market.
+        """
+        if not self.ticker.strip():
+            raise ValueError("ticker must contain at least one non-whitespace character")
+        if (
+            self.expiration_from is not None
+            and self.expiration_to is not None
+            and self.expiration_from > self.expiration_to
+        ):
+            raise ValueError(
+                "expiration_from must not be after expiration_to "
+                f"({self.expiration_from.isoformat()} > {self.expiration_to.isoformat()})"
+            )
+        if (
+            self.premium_min is not None
+            and self.premium_max is not None
+            and self.premium_min > self.premium_max
+        ):
+            raise ValueError(
+                "premium_min must not be greater than premium_max "
+                f"({self.premium_min} > {self.premium_max})"
+            )
+        return self
+
 
 def run_scan(req: ScanRequest, provider: OptionsDataProvider, store: Store) -> dict:
     symbol = req.ticker.strip().upper()
@@ -216,6 +251,44 @@ class MarketScanRequest(BaseModel):
     limit: int = Field(50, ge=1, le=200)
 
     _check_side = field_validator("side")(_validate_side)
+
+    @model_validator(mode="after")
+    def _check_bands(self) -> "MarketScanRequest":
+        """Reject inverted bands before launching a multi-minute sweep.
+
+        A ``dte_from`` beyond ``dte_to``, or a price floor above its ceiling,
+        selects nothing. The sweep still ran -- pricing and chain-fetching every
+        name it could -- then reported an empty board, which is the most
+        expensive way to tell someone their filter was backwards.
+        """
+        if (
+            self.price_min is not None
+            and self.price_max is not None
+            and self.price_min > self.price_max
+        ):
+            raise ValueError(
+                "price_min must not be greater than price_max "
+                f"({self.price_min} > {self.price_max})"
+            )
+        if (
+            self.premium_min is not None
+            and self.premium_max is not None
+            and self.premium_min > self.premium_max
+        ):
+            raise ValueError(
+                "premium_min must not be greater than premium_max "
+                f"({self.premium_min} > {self.premium_max})"
+            )
+        if (
+            self.dte_from is not None
+            and self.dte_to is not None
+            and self.dte_from > self.dte_to
+        ):
+            raise ValueError(
+                "dte_from must not be greater than dte_to "
+                f"({self.dte_from} > {self.dte_to})"
+            )
+        return self
 
 
 @app.post("/market/scan")

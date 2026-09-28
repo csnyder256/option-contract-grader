@@ -125,7 +125,7 @@ def test_get_quotes_batch_chunks_by_size(monkeypatch):
     p = TradierProvider(token="x")
     sent = []
 
-    def fake_post(path, data, retries=3):
+    def fake_post(path, data, retries=3, symbol=""):
         syms = data["symbols"].split(",")
         sent.append(syms)
         return {"quotes": {"quote": [{"symbol": s, "last": 10.0} for s in syms]}}
