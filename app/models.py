@@ -76,10 +76,12 @@ class Contract:
         """A quotable market: a real bid, a real ask, and no cross.
 
         A crossed book (``ask < bid``) is a stale or corrupted quote, not a
-        market. It used to satisfy this property, which then sent the caller
-        down the two-sided path with a mid computed off the crossed pair and a
-        negative bid/ask spread. Nothing had to go wrong upstream for the number
-        to be wrong; the flag just had to say yes.
+        market: the two-sided path would compute a mid off the crossed pair and
+        report a negative bid/ask spread. The ``ask >= bid`` guard was already
+        here before this pass (so this property's behavior is unchanged); what
+        was missing was regression coverage, which
+        ``tests/test_failures_surface.py`` now pins alongside the one-sided and
+        locked cases.
         """
         return self.bid > 0 and self.ask > 0 and self.ask >= self.bid
 

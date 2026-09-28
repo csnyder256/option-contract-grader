@@ -304,13 +304,16 @@ class CboeProvider(OptionsDataProvider):
     def _get_json(
         self, url: str, params: Optional[dict] = None, symbol: str = "", what: str = "request"
     ) -> Dict[str, Any]:
-        """GET a JSON endpoint, raising FeedError on any non-200.
+        """GET a JSON endpoint, raising FeedError on any non-200 or bad body.
 
         The CBOE delayed-quote CDN answers with an HTML error page (not JSON)
-        for a malformed or unknown symbol. Parsing that page without a status
-        check yielded zero expirations and an empty chain, which the API renders
-        as "No contracts matched your filters" -- a data-feed failure wearing a
-        normal empty result's clothes. One check, one honest answer.
+        for a malformed or unknown symbol. The *options* path already checked
+        HTTP status before parsing (``_fetch_options`` has always compared
+        ``resp.status_code == 200`` and raised a typed ``FeedError`` when no
+        candidate spelling returned one). The ``_chart_json`` path did not: it
+        called ``resp.json()`` directly and let a JSON decode failure raise a
+        bare ``ValueError``. This helper gives both paths the same status check,
+        the same unparseable-body guard, and the same non-object shape guard.
         """
         resp = self._request_with_retry(url, params=params, symbol=symbol)
         self.check_status(resp, symbol, what)

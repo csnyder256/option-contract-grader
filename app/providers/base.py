@@ -45,9 +45,12 @@ class OptionsDataProvider(ABC):
 
         Statuses already exhausted by the provider's own retry policy arrive
         here as-is; a 404 stays a "no such symbol" report rather than an empty
-        chain. Providers on a different transport (Tradier) raise
-        ``httpx.HTTPStatusError`` from ``raise_for_status()`` instead; unifying
-        the two is the documented roadmap item, so this helper is opt-in.
+        chain. This helper is a new shared contract, and it is currently used by
+        CBOE only. Tradier keeps its own equivalent check inside
+        ``TradierProvider._parse_json`` (it raises ``FeedError`` there rather
+        than calling this method), so the two providers agree on the *outcome*
+        -- a typed ``FeedError`` for a non-200 -- while still differing in
+        transport and retry policy.
         """
         code = getattr(resp, "status_code", None)
         if code == 200:

@@ -109,14 +109,17 @@ def test_future_only_history_stays_below_the_rank_floor():
 # --------------------------------------------------------------------------- #
 
 
+_NOT_JSON = object()
+
+
 class _Resp:
-    def __init__(self, status, json_data=None, headers=None):
+    def __init__(self, status, json_data=_NOT_JSON, headers=None):
         self.status_code = status
         self._json = json_data
         self.headers = headers or {}
 
     def json(self):
-        if self._json is None:
+        if self._json is _NOT_JSON:
             raise ValueError("not json")
         return self._json
 
@@ -129,11 +132,17 @@ class _SeqClient:
         self.calls = 0
         self.last_url = None
 
-    def get(self, url, params=None):
+    def _next(self, url):
         self.last_url = url
         r = self._responses[min(self.calls, len(self._responses) - 1)]
         self.calls += 1
         return r
+
+    def get(self, url, params=None):
+        return self._next(url)
+
+    def post(self, url, data=None, params=None):
+        return self._next(url)
 
 
 def _cboe_provider(responses, monkeypatch):
@@ -158,7 +167,7 @@ def test_cboe_non_200_options_raises_feederror(monkeypatch):
 def test_cboe_unparseable_200_raises_feederror(monkeypatch):
     from app.providers.base import FeedError
 
-    p = _cboe_provider([_Resp(200, None)], monkeypatch)  # 200, body is not JSON
+    p = _cboe_provider([_Resp(200)], monkeypatch)  # 200, body is not JSON
     with pytest.raises(FeedError) as ei:
         p.get_expirations("AAPL")
     assert "unparseable" in str(ei.value)
@@ -255,9 +264,198 @@ def test_tradier_errors_block_becomes_feederror(monkeypatch):
 
 
 def test_tradier_wellformed_empty_chain_is_not_an_error(monkeypatch):
+    """The distinction this whole change exists to preserve, on the Tradier side."""
     p = _tradier_provider(monkeypatch)
     p._client = _SeqClient([_Resp(200, {"options": None})])
     assert p.get_chain("AAPL", date.today()) == []
+
+
+def test_tradier_non_object_json_is_not_an_empty_chain(monkeypatch):
+    """A JSON non-object at HTTP 200 must raise, not read as "no options".
+
+    ``_parse_json`` collapsed anything that was not a dict to ``{}``, so the
+    chain/history parsers found no ``options`` / ``history`` key and returned an
+    empty list -- byte-identical to a legitimate empty feed, which let a
+    malformed response be reported as a valid empty board.
+    """
+    from app.providers.base import FeedError
+
+    # list / string / number / JSON-null. (An HTTP-200 HTML body is the
+    # separate `unparseable` branch, already covered below.)
+    for body in (["not", "an", "object"], "null-body", 42, None):
+        p = _tradier_provider(monkeypatch)
+        p._client = _SeqClient([_Resp(200, body)])
+        with pytest.raises(FeedError) as ei:
+            p.get_chain("AAPL", date.today())
+        assert "shape" in str(ei.value)
+        assert ei.value.symbol == "AAPL"
+
+
+def test_tradier_unparseable_200_is_not_an_empty_chain(monkeypatch):
+    """An HTML (non-JSON) 200 body takes the unparseable branch, same contract."""
+    from app.providers.base import FeedError
+
+    p = _tradier_provider(monkeypatch)
+    p._client = _SeqClient([_Resp(200)])  # default body is not JSON
+    with pytest.raises(FeedError) as ei:
+        p.get_chain("AAPL", date.today())
+    assert "unparseable" in str(ei.value)
+
+
+def test_tradier_non_object_json_raises_on_get_and_batch_post(monkeypatch):
+    """Both transports: the GET path and the batched POST path."""
+    from app.providers.base import FeedError
+
+    # GET -- expirations and history both go through _get -> _parse_json
+    for call in (
+        lambda p: p.get_expirations("AAPL"),
+        lambda p: p.get_history("AAPL"),
+    ):
+        p = _tradier_provider(monkeypatch)
+        p._client = _SeqClient([_Resp(200, ["a", "list"])])
+        with pytest.raises(FeedError) as ei:
+            call(p)
+        assert "shape" in str(ei.value)
+
+    # POST -- get_quotes_batch goes through _post -> _parse_json
+    p = _tradier_provider(monkeypatch)
+    p._client = _SeqClient([_Resp(200, 7)])
+    with pytest.raises(FeedError) as ei:
+        p.get_quotes_batch(["AAPL", "MSFT"])
+    assert "shape" in str(ei.value)
+    assert "AAPL,MSFT" in ei.value.symbol  # the batch names the chunk it lost
+
+
+def test_tradier_wellformed_empty_batch_is_still_empty(monkeypatch):
+    """A well-formed 200 carrying no quotes is a normal empty dict, not an error."""
+    p = _tradier_provider(monkeypatch)
+    p._client = _SeqClient([_Resp(200, {"quotes": None})])
+    assert p.get_quotes_batch(["AAPL"]) == {}
+
+
+# --------------------------------------------------------------------------- #
+# Endpoint coverage: the error contract as the HTTP client actually sees it.
+#
+# Until now the README claimed TestClient coverage that did not exist -- this
+# module never imported TestClient. These tests drive the real FastAPI app, so
+# the 502 / 200 / 422 mapping is proven through the stack, not asserted in prose.
+# --------------------------------------------------------------------------- #
+
+
+def _client_with_provider(monkeypatch, provider):
+    """A TestClient whose /scan provider is a stub (no network, no token)."""
+    from fastapi.testclient import TestClient
+
+    import app.api as api
+    from app.store import Store
+
+    monkeypatch.setattr(api, "get_provider", lambda: provider)
+    monkeypatch.setattr(api, "get_store", lambda: Store(":memory:"))
+    return TestClient(api.app)
+
+
+def test_endpoint_malformed_feed_returns_502(monkeypatch):
+    """A FeedError from the provider must surface as 502, naming the reason."""
+    from app.providers.base import FeedError
+
+    class Boom:
+        supports_batch_quotes = False
+
+        def get_quote(self, symbol):
+            raise FeedError(symbol, "chain: unexpected JSON shape (not an object)")
+
+        def get_history(self, symbol, days=60):  # pragma: no cover - not reached
+            raise FeedError(symbol, "unreachable")
+
+    client = _client_with_provider(monkeypatch, Boom())
+    r = client.post("/scan", json={"ticker": "AAPL"})
+    assert r.status_code == 502
+    body = r.json()
+    assert "Data feed unavailable" in body["detail"]
+    assert "unexpected JSON shape" in body["detail"]
+
+
+def test_endpoint_wellformed_empty_feed_returns_200(monkeypatch):
+    """A legitimate empty chain is 200 with an empty result -- not a 502."""
+    from datetime import date as _date
+
+    from app.models import Quote
+
+    class EmptyButHealthy:
+        supports_batch_quotes = False
+
+        def get_quote(self, symbol):
+            return Quote(symbol=symbol, last=100.0, dividend_yield=0.0)
+
+        def get_history(self, symbol, days=60):
+            return []
+
+        def get_expirations(self, symbol):
+            return []
+
+        def get_chain(self, symbol, expiration, side="both"):
+            return []
+
+    client = _client_with_provider(monkeypatch, EmptyButHealthy())
+    r = client.post("/scan", json={"ticker": "ZZZZ"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["meta"]["ticker"] == "ZZZZ"
+    assert body["results"] == []
+
+
+def test_endpoint_inverted_and_blank_requests_are_422(monkeypatch):
+    """Impossible requests are rejected before any provider work happens.
+
+    The provider here raises if it is ever touched, which proves the 422 came
+    from request validation and not from a feed error wearing a validation code.
+    """
+
+    class MustNotBeCalled:
+        supports_batch_quotes = False
+
+        def __getattr__(self, name):
+            raise AssertionError(f"provider.{name} was called for an invalid request")
+
+    client = _client_with_provider(monkeypatch, MustNotBeCalled())
+
+    cases = [
+        {"ticker": "AAPL", "expiration_from": "2026-12-01", "expiration_to": "2026-01-01"},
+        {"ticker": "AAPL", "premium_min": 9.0, "premium_max": 1.0},
+        {"ticker": "   "},
+    ]
+    for payload in cases:
+        r = client.post("/scan", json=payload)
+        assert r.status_code == 422, f"{payload} -> {r.status_code}"
+
+
+def test_endpoint_market_scan_rejects_inverted_bands_422(monkeypatch):
+    """The market endpoint's band validation is enforced at the HTTP boundary too."""
+    from fastapi.testclient import TestClient
+
+    import app.api as api
+
+    client = TestClient(api.app)
+    for payload in (
+        {"dte_from": 60, "dte_to": 14},
+        {"price_min": 500, "price_max": 100},
+        {"premium_min": 9, "premium_max": 1},
+    ):
+        r = client.post("/market/scan", json=payload)
+        assert r.status_code == 422, f"{payload} -> {r.status_code}"
+
+
+def test_endpoint_health_and_key_still_serve(monkeypatch):
+    """The endpoints the frontend legend depends on, over the real app."""
+    from fastapi.testclient import TestClient
+
+    import app.api as api
+
+    client = TestClient(api.app)
+    assert client.get("/health").status_code == 200
+    r = client.get("/key")
+    assert r.status_code == 200
+    assert "grade_key" in r.json() and "sub_score_labels" in r.json()
 
 
 # --------------------------------------------------------------------------- #

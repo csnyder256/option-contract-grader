@@ -271,6 +271,12 @@ class TradierProvider(OptionsDataProvider):
         that survived the retry loop used to arrive as a bare
         ``httpx.HTTPStatusError``, which callers catching ``FeedError`` never
         saw -- the README lists that as a documented rough edge.
+
+        Returns the parsed object on success. A non-200, an unparseable body,
+        an ``errors`` block, or a JSON *non-object* (array/string/number/null)
+        all raise ``FeedError``. Only a well-formed object passes through, so a
+        caller can still receive an empty chain from a legitimate
+        ``{"options": null}`` without that being confused for a dead feed.
         """
         status = getattr(resp, "status_code", 200)
         if status != 200:
@@ -282,12 +288,19 @@ class TradierProvider(OptionsDataProvider):
             payload = resp.json()
         except ValueError as e:
             raise FeedError(symbol or "?", f"{what}: unparseable JSON response") from e
-        if isinstance(payload, dict) and payload.get("errors"):
+        if not isinstance(payload, dict):
+            # A JSON array, string, number, or null at HTTP 200 used to collapse
+            # to {} and be parsed as an empty chain/history -- a malformed feed
+            # wearing a normal empty result's clothes, which is exactly what this
+            # module's error contract exists to prevent. Only an OBJECT can carry
+            # ``options`` / ``history``; anything else is a broken response.
+            raise FeedError(symbol or "?", f"{what}: unexpected JSON shape (not an object)")
+        if payload.get("errors"):
             errs = payload["errors"]
             if isinstance(errs, dict):
                 errs = errs.get("error") or errs
             raise FeedError(symbol or "?", f"{what}: {errs}")
-        return payload if isinstance(payload, dict) else {}
+        return payload
 
     def get_quote(self, symbol: str) -> Quote:
         resp = self._get_raw("/v1/markets/quotes", {"symbols": symbol, "greeks": "false"})
