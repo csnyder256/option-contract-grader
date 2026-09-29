@@ -8,6 +8,7 @@ unknown side must be rejected (422), never silently widened to "both".
 """
 
 from datetime import date, timedelta
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -150,11 +151,16 @@ def test_market_scan_starts_and_status_polls(monkeypatch, client):
     assert started.json()["status"] == "running"
 
     state = started.json()
-    for _ in range(80):
+    # The scan runs on background threads and includes provider politeness
+    # jitter. Poll against elapsed time so a fast CI host cannot exhaust an
+    # arbitrary request count before the offline scan finishes.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
         state = client.get("/market/status").json()
         if state["status"] in ("done", "error"):
             break
-    assert state["status"] == "done"
+        time.sleep(0.01)
+    assert state["status"] == "done", state
     assert state["results"]
 
 

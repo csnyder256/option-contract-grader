@@ -1,0 +1,12 @@
+services:
+  grader:
+    build: .
+    ports: ["127.0.0.1:${GRADER_PORT:-8000}:8000"]
+    environment:
+      TRADIER_TOKEN: ${TRADIER_TOKEN:-}
+    volumes: ["grader-data:/opt/option/data"]
+    init: true
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+volumes:
+  grader-data:

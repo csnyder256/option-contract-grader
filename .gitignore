@@ -52,3 +52,6 @@ node_modules/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Release build output
+dist-release/
