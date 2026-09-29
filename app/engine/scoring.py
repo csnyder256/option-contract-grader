@@ -72,6 +72,7 @@ def score_contract(
     otype = contract.option_type
     mid = contract.mid
     flags: List[str] = []
+    scenario_context = {"spot": S, "risk_free_rate": r, "dividend_yield": q, "historical_vol": hv, "iv_rank": iv_rank}
 
     # Effective time to expiry in years (floor avoids div-by-zero on 0DTE).
     dte = max(contract.dte, 0)
@@ -92,6 +93,8 @@ def score_contract(
             overall_meaning=grade_for(0.0)[1],
             sub_scores=[], break_even=break_even,
             cost_per_contract=cost_per_contract, flags=flags,
+            score_trace={"recipe_version": 1, "components": [], "weighted_score": 0.0, "final_score": 0.0, "liquidity_gate": False, "liquidity_penalty": 0.0, "no_price_gate": True},
+            scenario_context=scenario_context,
         )
 
     # --- Implied volatility (compute our own; fall back to vendor) ----------
@@ -137,7 +140,7 @@ def score_contract(
             pop = bs.prob_itm(S, max(be, 1e-6), r, q, iv, T, otype)
         odds_score = pop * 100.0
         sub_scores.append(_sub("odds", odds_score,
-                               f"About a {pop:.0%} chance of being profitable by expiration.",
+                               f"Risk-neutral model estimate: {pop:.0%} above break-even at expiry; not an empirical probability.",
                                f"break-even ${be:.2f}"))
     else:
         pop = None
@@ -251,10 +254,26 @@ def score_contract(
     total_w = sum(weights.values()) or 1.0
     composite = sum(weights.get(k, 0.0) * by_key.get(k, 0.0) for k in weights) / total_w
 
+    weighted_score = composite
     if gated:
         composite = min(composite, 39.0)
         flags.append("Illiquid - overall capped; other scores unreliable")
 
+    components = [
+        {"key": sub.key, "score": sub.score, "weight": weights.get(sub.key, 0.0),
+         "normalized_weight": weights.get(sub.key, 0.0)/total_w,
+         "contribution": sub.score * weights.get(sub.key, 0.0)/total_w,
+         "basis": "fallback: missing input" if sub.metric == "n/a" else "observed liquidity" if sub.key == "liquidity" else "model or heuristic",
+         "metric": sub.metric, "explanation": sub.explanation}
+        for sub in sub_scores
+    ]
+    trace = {"recipe_version": 1, "components": components, "weighted_score": weighted_score,
+             "final_score": composite, "liquidity_gate": gated, "liquidity_cap": 39.0,
+             "liquidity_penalty": weighted_score-composite, "no_price_gate": False,
+             "gate_inputs": {"spread_pct": spread_pct, "max_spread_pct": cfg.max_spread_pct,
+                             "open_interest": oi, "min_open_interest": cfg.min_open_interest},
+             "effective_pricing_days": T*365,
+             "interpretation": "Buyer-oriented heuristic; weights and fallback scores are design choices, not a measured profit forecast."}
     grade, meaning = grade_for(composite)
     return ScoredContract(
         contract=contract,
@@ -267,4 +286,5 @@ def score_contract(
         break_even=break_even,
         cost_per_contract=cost_per_contract,
         flags=flags,
+        score_trace=trace, scenario_context=scenario_context,
     )

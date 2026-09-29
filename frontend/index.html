@@ -10,11 +10,12 @@
 <body>
   <header>
     <h1>Options Finder</h1>
-    <p class="tagline">Type a ticker or sweep the market, get ranked &amp; graded contracts. The grade is the expert &mdash; you just read it.</p>
+    <p class="tagline">Type a ticker or sweep the market, get ranked &amp; graded contracts. Inspect the weighted grade, model assumptions and possible outcomes.</p>
   </header>
 
   <nav class="tabs">
     <button class="tab active" data-tab="single" type="button">Single Ticker</button>
+    <button class="tab" data-tab="scenario" type="button">Scenario Simulator</button>
     <button class="tab" data-tab="market" type="button">Market (full optionable universe)</button>
   </nav>
 
@@ -115,11 +116,42 @@
     <div id="market-results"></div>
   </section>
 
+  <section id="panel-scenario" class="panel">
+    <div class="scenario-intro"><p>OPTION CONTRACT GRADER / WHAT IF</p><h2>See the trade-offs before the trade.</h2><p>Explore spot, volatility and time using the same pricing engine. Green shows a theoretical mark; gray shows expiry payoff. Hypothetical inputs require no market account and place no orders.</p><button id="scenario-example" type="button">Run illustrative example</button></div>
+    <form id="scenario-form">
+<div class="field"><label for="s-label">Scenario label</label><input id="s-label" name="label" type="text" value="Illustrative 30-day call"  required></div>
+<div class="field"><label for="s-option_type">Position</label><select id="s-option_type" name="option_type"><option value="call">Long call</option><option value="put">Long put</option></select></div>
+<div class="field"><label for="s-spot">Underlying spot ($)</label><input id="s-spot" name="spot" type="number" value="100" min=".0001" step="any" required></div>
+<div class="field"><label for="s-strike">Strike ($)</label><input id="s-strike" name="strike" type="number" value="100" min=".0001" step="any" required></div>
+<div class="field"><label for="s-premium">Purchase premium ($/share)</label><input id="s-premium" name="premium" type="number" value="3.1" min="0" step=".01" required></div>
+<div class="field"><label for="s-dte">Days to expiry</label><input id="s-dte" name="dte" type="number" value="30" min="0" max="3650" step="1" required></div>
+<div class="field"><label for="s-elapsed_days">Days elapsed in scenario</label><input id="s-elapsed_days" name="elapsed_days" type="number" value="7" min="0" step=".5" required></div>
+<div class="field"><label for="s-iv">Current annual IV (%)</label><input id="s-iv" name="iv" type="number" value="25" min="0" step=".1" required></div>
+<div class="field"><label for="s-iv_change">IV change (percentage points)</label><input id="s-iv_change" name="iv_change" type="number" value="0" step=".1" required></div>
+<div class="field"><label for="s-risk_free_rate">Annual rate (%)</label><input id="s-risk_free_rate" name="risk_free_rate" type="number" value="4" step=".1" required></div>
+<div class="field"><label for="s-dividend_yield">Continuous annual dividend (%)</label><input id="s-dividend_yield" name="dividend_yield" type="number" value="0" min="0" step=".1" required></div>
+<div class="field"><label for="s-contracts">Contracts</label><input id="s-contracts" name="contracts" type="number" value="1" min="1" step="1" required></div>
+<div class="field"><label for="s-multiplier">Shares per contract</label><input id="s-multiplier" name="multiplier" type="number" value="100" min="1" step="1" required></div>
+<div class="field"><label for="s-round_trip_fee_per_contract">Round-trip fee ($/contract)</label><input id="s-round_trip_fee_per_contract" name="round_trip_fee_per_contract" type="number" value="1.3" min="0" step=".01" required></div>
+<div class="field"><label for="s-move_min_pct">Minimum spot move (%)</label><input id="s-move_min_pct" name="move_min_pct" type="number" value="-30" min="-99.99" step="any" required></div>
+<div class="field"><label for="s-move_max_pct">Maximum spot move (%)</label><input id="s-move_max_pct" name="move_max_pct" type="number" value="30" step="1" required></div>
+<div class="field"><label for="s-historical_vol">Realized volatility (%) · optional</label><input id="s-historical_vol" name="historical_vol" type="number" value="" min=".01" step="any" ></div>
+<div class="field"><label for="s-bid">Quote bid ($/share) · optional</label><input id="s-bid" name="bid" type="number" value="3" min="0" step=".01" ></div>
+<div class="field"><label for="s-ask">Quote ask ($/share) · optional</label><input id="s-ask" name="ask" type="number" value="3.2" min="0" step=".01" ></div>
+<div class="field"><label for="s-open_interest">Open interest</label><input id="s-open_interest" name="open_interest" type="number" value="1000" min="0" step="1" required></div>
+<div class="field"><label for="s-volume">Volume</label><input id="s-volume" name="volume" type="number" value="500" min="0" step="1" required></div>
+<div class="field"><label for="s-iv_rank">IV rank · optional</label><input id="s-iv_rank" name="iv_rank" type="number" value="" min="0" max="100" step="1" ></div>
+<input type="hidden" name="points" value="61"><button type="submit" id="scenario-run">Simulate scenarios</button>
+    </form><p id="scenario-status" class="status" role="status" aria-live="polite"></p><div id="scenario-output"></div>
+    <div class="scenario-exports"><button type="button" data-scenario-export="json" disabled>Export JSON report</button><button type="button" data-scenario-export="csv" disabled>Export CSV</button><button type="button" data-scenario-export="html" disabled>Export printable report</button></div>
+  </section>
+
   <details id="legend" class="legend">
     <summary>What do the grades mean?</summary>
     <div id="legend-body"></div>
   </details>
 
   <script src="app.js"></script>
+  <script src="scenario.js"></script>
 </body>
 </html>

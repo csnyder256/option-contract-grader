@@ -210,3 +210,27 @@ details.detail summary { cursor: pointer; color: var(--accent); font-size: 13px;
   .card { grid-template-columns: 72px 1fr; }
   .badge .letter { font-size: 32px; }
 }
+
+.scenario-intro { padding:2rem;border-radius:1rem;background:#15263c;color:#e4ecf7;margin-bottom:1.5rem }
+.scenario-intro h2 { font-size:2rem;margin:.5rem 0 }
+#scenario-output {background:#122033;color:#dbe7f5;padding:1.5rem;border-radius:1rem;margin-top:1rem}
+#scenario-output:empty {display:none}
+#scenario-output svg {width:100%;height:auto;margin:1rem 0}
+#scenario-output .card {background:#1b2d44;color:#e4ecf7}
+.scenario-stats {display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem}
+.scenario-stat {display:flex;flex-direction:column;gap:.5rem;padding:1rem;border:1px solid #40546e;border-radius:.5rem}
+.scenario-stat strong {font-size:1.4rem}
+.scenario-exports {display:flex;flex-wrap:wrap;gap:.7rem;margin:1rem 0}
+#scenario-output pre {overflow:auto;max-width:100%}
+#scenario-output details {padding:.8rem 0}
+.card button {margin:.6rem .6rem 0 0}
+
+/* Keep the scenario workspace aligned with the existing grader. */
+#panel-scenario {max-width:1000px;margin:1.5rem auto;padding:0 12px;box-sizing:border-box}
+#panel-scenario form {max-width:none;margin:1rem 0}
+#panel-scenario button,.card button {background:var(--panel-2);color:var(--text);border:1px solid var(--border);padding:.7rem 1rem;border-radius:8px;cursor:pointer;font:600 14px system-ui}
+#panel-scenario button:hover,.card button:hover {border-color:var(--accent)}
+#panel-scenario button:focus-visible,.card button:focus-visible {outline:3px solid var(--accent);outline-offset:3px}
+#panel-scenario button:disabled {opacity:.55;cursor:wait}
+#scenario-form button[type=submit],#scenario-example {background:#21c687;color:#052b20}
+@media(max-width:480px){#panel-scenario form {grid-template-columns:1fr}.scenario-intro {padding:1.3rem}.scenario-intro h2 {font-size:1.6rem}#scenario-output {padding:1rem}}

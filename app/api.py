@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.scenarios import router as scenario_router
 from app import market
 from app.config import settings
 from app.engine.grading import grade_key
@@ -44,7 +45,7 @@ def _validate_side(value: str) -> str:
         raise ValueError(str(e)) from None
 
 
-app = FastAPI(title="Deterministic Options Finder", version="0.2.1")
+app = FastAPI(title="Deterministic Options Finder", version="0.3.0")
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
@@ -342,6 +343,8 @@ def health():
 def key():
     return {"grade_key": grade_key(), "sub_score_labels": LABELS}
 
+
+app.include_router(scenario_router)
 
 # Serve the frontend last so API routes take precedence.
 if FRONTEND_DIR.exists():

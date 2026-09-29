@@ -125,6 +125,8 @@ class ScoredContract:
     break_even: float
     cost_per_contract: float        # premium * 100
     flags: List[str] = field(default_factory=list)
+    score_trace: Dict[str, Any] = field(default_factory=dict)
+    scenario_context: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         c = self.contract
@@ -149,4 +151,6 @@ class ScoredContract:
             "overall_meaning": self.overall_meaning,
             "sub_scores": [s.to_dict() for s in self.sub_scores],
             "flags": self.flags,
+            "score_trace": self.score_trace,
+            "scenario_context": self.scenario_context,
         }
