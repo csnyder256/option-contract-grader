@@ -54,14 +54,11 @@ DEFAULT_WEIGHTS: Dict[str, float] = {
 
 # --- Grade bands. (min_inclusive, letter, plain-English overall meaning). -----
 GRADE_BANDS = [
-    (90.0, "A", "As close to free money as options legally get - the odds, the price, "
-                "the liquidity, and the math all line up."),
-    (75.0, "B", "Strong setup. A couple of things aren't perfect, but the edge is real."),
-    (60.0, "C", "Playable but mediocre. You're not getting robbed, but you're not getting "
-                "an edge either."),
-    (40.0, "D", "Weak. The price or the odds are working against you."),
-    (0.0,  "F", "Put your money on a race horse named Tubby McTubberson instead - "
-                "overpriced, illiquid, or the odds are ugly."),
+    (90.0, "A", "Highest band under the buyer scoring recipe. Review quote quality and model assumptions."),
+    (75.0, "B", "Strong score under the stated weights, with some weaker dimensions."),
+    (60.0, "C", "Mixed score: inspect the individual trade-offs before drawing a conclusion."),
+    (40.0, "D", "Weak score under the recipe; price, liquidity or modeled odds need scrutiny."),
+    (0.0, "F", "Lowest band, including contracts capped by the liquidity gate or lacking a price."),
 ]
 
 

@@ -354,3 +354,13 @@ Built by Cade (https://github.com/csnyder256)
 [Latest release](https://github.com/csnyder256/option-contract-grader/releases/latest) · [Install, deploy and upgrade](DEPLOYMENT.md)
 
 Release assets include checksums and version-specific notes.
+
+## Scenario simulator and transparent reports
+
+Use the Scenario Simulator tab or “Explore scenarios” on a graded contract. Enter a purchase premium, quantity, actual contract multiplier, round-trip fees, spot range, time elapsed and volatility change. The chart separates theoretical mark-to-model P/L before expiry from intrinsic expiry payoff. The illustrative example runs locally without calling any market provider or trading API.
+
+Every grade exposes the exact normalized weights, raw component contributions, missing-input fallback scores and liquidity cap. Their sum reconciles to the unrounded composite. These weights are buyer-oriented design choices; grades are not empirical profit forecasts. The odds component is a risk-neutral model estimate.
+
+Export a grade as JSON, or a scenario as JSON, CSV and a printable HTML report. Scenario reports carry input and engine SHA-256 fingerprints and all modeling assumptions; equal inputs reproduce equal reports. POST /scenario and POST /scenario/report?format=json|csv|html are available for automation.
+
+The existing Black–Scholes–Merton engine models European exercise, constant volatility/rates and continuous dividend yield. It excludes early exercise, volatility smile and execution slippage. See the [Options Industry Council model explanation](https://prd-web.optionseducation.org/advancedconcepts/black-scholes-formula). Scenario values are hypothetical; a model price does not promise an executable premium. Zero remaining time uses exact intrinsic value; the grader's separate half-day 0DTE floor is disclosed.

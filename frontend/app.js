@@ -17,37 +17,39 @@ function renderInto(container, results) {
 }
 
 function renderCard(r) {
-  const card = document.createElement("div");
-  const illiquid = (r.flags || []).some((f) => f.toLowerCase().includes("illiquid"));
-  card.className = "card" + (illiquid ? " illiquid" : "");
-
-  const title = `${r.underlying} ${fmtMoney(r.strike)} ${r.type === "call" ? "Call" : "Put"}`;
-  const sub = `exp ${r.expiration} · ${r.dte} DTE · ${fmtMoney(r.premium_per_share)}/sh · ${fmtMoney(r.cost_per_contract)}/contract · break-even ${fmtMoney(r.break_even)}`;
-
-  const chips = (r.sub_scores || [])
-    .map((s) => `<span class="chip"><span class="ck">${s.label}</span><span class="cg fg-${s.grade}">${s.grade}</span><span>${Math.round(s.score)}</span></span>`)
-    .join("");
-  const detailRows = (r.sub_scores || [])
-    .map((s) => `<tr><td class="g fg-${s.grade}">${s.grade}</td><td class="k">${s.label}</td><td>${s.explanation}<div class="m">${s.metric || ""}</div></td></tr>`)
-    .join("");
-  const flags = r.flags && r.flags.length ? `<div class="flags">⚠ ${r.flags.join(" · ")}</div>` : "";
-
-  card.innerHTML = `
-    <div class="badge grade-${r.overall_grade}">
-      <span class="letter">${r.overall_grade}</span>
-      <span class="num">${Math.round(r.overall_score)}</span>
-    </div>
-    <div class="body">
-      <div class="title">${title}</div>
-      <div class="sub">${sub}</div>
-      <div class="meaning">${r.overall_meaning}</div>
-      ${flags}
-      <div class="subscores">${chips}</div>
-      <details class="detail"><summary>Why this grade?</summary>
-        <table class="detail-table">${detailRows}</table>
-      </details>
-    </div>`;
-  return card;
+  const node = (tag, text, klass) => { const n=document.createElement(tag);if(text!=null)n.textContent=text;if(klass)n.className=klass;return n; };
+  const grade=["A","B","C","D","F"].includes(r.overall_grade)?r.overall_grade:"F";
+  const card=node("div",null,"card"+((r.flags||[]).some(f=>f.toLowerCase().includes("illiquid"))?" illiquid":""));
+  const badge=node("div",null,"badge grade-"+grade);
+  badge.append(node("span",grade,"letter"),node("span",String(Math.round(r.overall_score)),"num"));
+  const body=node("div",null,"body");
+  body.append(node("div",r.underlying+" "+fmtMoney(r.strike)+" "+(r.type==="call"?"Call":"Put"),"title"));
+  body.append(node("div","exp "+r.expiration+" · "+r.dte+" DTE · "+fmtMoney(r.premium_per_share)+"/sh · "+fmtMoney(r.cost_per_contract)+"/contract · break-even "+fmtMoney(r.break_even),"sub"));
+  body.append(node("div",r.overall_meaning,"meaning"));
+  if(r.flags?.length)body.append(node("div","⚠ "+r.flags.join(" · "),"flags"));
+  const chips=node("div",null,"subscores"),table=node("table",null,"detail-table");
+  for(const score of r.sub_scores||[]){
+    const sg=["A","B","C","D","F"].includes(score.grade)?score.grade:"F";
+    const chip=node("span",null,"chip");chip.append(node("span",score.label,"ck"),node("span",sg,"cg fg-"+sg),node("span",String(Math.round(score.score))));chips.append(chip);
+    const row=node("tr"),explanation=node("td",score.explanation);explanation.append(node("div",score.metric||"","m"));
+    row.append(node("td",sg,"g fg-"+sg),node("td",score.label,"k"),explanation);table.append(row);
+  }
+  body.append(chips);const details=node("details",null,"detail");details.append(node("summary","Why this grade?"),table);
+  const trace=r.score_trace;
+  if(trace){
+    details.append(node("p","Weighted score "+trace.weighted_score.toFixed(4)+" − liquidity penalty "+trace.liquidity_penalty.toFixed(4)+" = final "+trace.final_score.toFixed(4)+". "+(trace.interpretation||"No usable price: score forced to zero.")));
+    const contributions=node("table",null,"detail-table"),head=node("tr");
+    ["Dimension","Score","Weight","Contribution","Basis"].forEach(label=>head.append(node("th",label)));contributions.append(head);
+    for(const c of trace.components){const row=node("tr");[c.key,c.score.toFixed(3),(c.normalized_weight*100).toFixed(1)+"%",c.contribution.toFixed(4),c.basis].forEach(v=>row.append(node("td",String(v))));contributions.append(row);}
+    details.append(contributions,node("p","Liquidity gate: "+(trace.liquidity_gate?"triggered":"not triggered")+". Missing-input fallback scores are included in the weighted recipe; they are not observations."));
+  }
+  body.append(details);
+  const simulate=node("button","Explore scenarios");simulate.type="button";simulate.addEventListener("click",()=>window.optionScenario?.open(r));body.append(simulate);
+  const exportButton=node("button","Export this grade");exportButton.type="button";
+  exportButton.addEventListener("click",()=>{
+    const url=URL.createObjectURL(new Blob([JSON.stringify({schema:"option-contract-grader.grade",version:1,contract:r},null,2)+"\n"],{type:"application/json"}));
+    const a=document.createElement("a");a.href=url;a.download="option-grade.json";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  });body.append(exportButton);card.append(badge,body);return card;
 }
 
 function renderLegend(key) {
