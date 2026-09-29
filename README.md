@@ -347,3 +347,10 @@ Roadmap, in rough priority order: an American-option pricer (binomial or Bjerksu
 MIT. See [LICENSE](LICENSE). Market data belongs to CBOE, Yahoo, Tradier, and the OCC respectively, and complying with their terms is on you. The `app/universe/sp500_etfs.txt` fallback is a small static set of ticker symbols compiled from public S&P 500 constituent listings.
 
 Built by Cade (https://github.com/csnyder256)
+
+
+## Release downloads and deployment
+
+[Latest release](https://github.com/csnyder256/option-contract-grader/releases/latest) · [Install, deploy and upgrade](DEPLOYMENT.md)
+
+Release assets include checksums and version-specific notes.

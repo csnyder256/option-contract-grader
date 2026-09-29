@@ -1,0 +1,7 @@
+{
+  "name": "option-contract-grader",
+  "package_json": [],
+  "version_patterns": {
+    "app/api.py": "version=\"([^\"]+)\""
+  }
+}

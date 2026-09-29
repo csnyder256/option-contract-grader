@@ -44,7 +44,7 @@ def _validate_side(value: str) -> str:
         raise ValueError(str(e)) from None
 
 
-app = FastAPI(title="Deterministic Options Finder", version="0.2.0")
+app = FastAPI(title="Deterministic Options Finder", version="0.2.1")
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
