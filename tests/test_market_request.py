@@ -15,7 +15,7 @@ import pytest
 
 from app.api import MarketScanRequest
 from app.config import Settings
-from app.models import Contract, OptionType, Quote
+from app.models import Contract, OHLC, OptionType, Quote
 from app.providers.base import OptionsDataProvider, UnknownSide, filter_side, normalize_side
 from app.scanner import ScanFilters, scan_symbol
 from app.store import Store
@@ -181,15 +181,18 @@ def test_a_typo_never_produces_a_widened_board_through_scan_symbol():
 
 
 # --------------------------------------------------------------------------- #
-# MAX_RESULTS: documented in .env.example, assigned in config.py, read nowhere.
+# MAX_RESULTS: a documented ceiling that is now actually enforced.
+#
+# It was documented in .env.example ("Max scored contracts returned by a single
+# scan") and assigned in config.py, but no code path read it -- /scan returned
+# req.limit and the sweep returned its own limit, so turning the knob changed
+# nothing. It is now the server-side ceiling on a request's returned contracts.
 # --------------------------------------------------------------------------- #
 
-def test_max_results_is_not_consulted_by_a_scan(monkeypatch):
-    """Turning MAX_RESULTS down must not change a scan's returned count.
 
-    The README now lists this as a known rough edge. If someone wires the knob
-    up for real, this test fails and the README note should be removed with it.
-    """
+def _many_calls_provider(n=150):
+    """A provider with `n` tradeable calls on a single 30-DTE expiration."""
+
     class Many(OptionsDataProvider):
         supports_batch_quotes = False
 
@@ -206,17 +209,124 @@ def test_max_results_is_not_consulted_by_a_scan(monkeypatch):
                     option_type=OptionType.CALL, strike=k, expiration=expiration,
                     dte=30, bid=3.0, ask=3.2, last=3.1, volume=500, open_interest=1000,
                 )
-                for k in (90.0 + i for i in range(20))
+                for k in (90.0 + i for i in range(n))
             ]
 
         def get_history(self, symbol, days=60):
             return []
 
-    prov, store = Many(), Store(":memory:")
-    capped = Settings(max_results=2)
-    res = scan_symbol("TEST", prov, store, 100.0, 0.0, 0.30,
-                      ScanFilters(side="calls"), settings=capped)
-    assert len(res.scored) == 20, (
-        "MAX_RESULTS is documented as a cap but scan_symbol ignores it; "
-        "if this now equals 2, the knob was wired up - update the README caveat"
+    return Many()
+
+
+def _scan_client(monkeypatch, provider):
+    from fastapi.testclient import TestClient
+
+    import app.api as api
+
+    monkeypatch.setattr(api, "get_provider", lambda: provider)
+    monkeypatch.setattr(api, "get_store", lambda: Store(":memory:"))
+    return TestClient(api.app)
+
+
+def test_max_results_caps_a_scan_through_the_api(monkeypatch):
+    """A request for 500 contracts is capped at MAX_RESULTS, and says so."""
+    import app.api as api
+
+    monkeypatch.setattr(api.settings, "max_results", 100)
+    client = _scan_client(monkeypatch, _many_calls_provider(150))
+
+    r = client.post("/scan", json={"ticker": "TEST", "side": "calls", "limit": 500})
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["results"]) == 100                      # capped, not 150
+    assert any("MAX_RESULTS caps" in n for n in body["meta"]["notes"])
+
+
+def test_max_results_only_lowers_a_request_never_widens_it(monkeypatch):
+    """A request below the ceiling is honored unchanged."""
+    import app.api as api
+
+    monkeypatch.setattr(api.settings, "max_results", 100)
+    client = _scan_client(monkeypatch, _many_calls_provider(150))
+
+    r = client.post("/scan", json={"ticker": "TEST", "side": "calls", "limit": 3})
+    assert r.status_code == 200
+    assert len(r.json()["results"]) == 3
+
+
+def test_max_results_zero_disables_the_cap(monkeypatch):
+    """0 means "no cap", matching the other 0-means-unlimited sweep knobs."""
+    import app.api as api
+
+    monkeypatch.setattr(api.settings, "max_results", 0)
+    client = _scan_client(monkeypatch, _many_calls_provider(150))
+
+    r = client.post("/scan", json={"ticker": "TEST", "side": "calls", "limit": 500})
+    assert r.status_code == 200
+    assert len(r.json()["results"]) == 150
+
+
+class _SweepProvider(OptionsDataProvider):
+    """Minimal offline provider for the sweep (price + history + a small chain)."""
+
+    supports_batch_quotes = False
+
+    def __init__(self, prices):
+        self.prices = prices
+
+    def get_quote(self, symbol):
+        return Quote(symbol=symbol, last=self.prices.get(symbol, 0.0))
+
+    def get_price_and_history(self, symbol, days=60):
+        price = self.prices.get(symbol, 0.0)
+        bars, p = [], price or 100.0
+        for i in range(40):
+            o = p
+            c = p * (1.0 + 0.012 * (((i % 5) - 2) / 2.0))
+            bars.append(OHLC(day=date.today() - timedelta(days=40 - i), open=o,
+                             high=max(o, c) * 1.01, low=min(o, c) * 0.99, close=c, volume=1e6))
+            p = c
+        return price, bars
+
+    def get_history(self, symbol, days=60):
+        return self.get_price_and_history(symbol, days)[1]
+
+    def get_expirations(self, symbol):
+        return [date.today() + timedelta(days=30)]
+
+    def get_chain(self, symbol, expiration, side="both"):
+        price = self.prices.get(symbol, 100.0)
+        mid = max(0.50, price * 0.03)
+        out = []
+        for k in (price * 0.95, price, price * 1.05):
+            for ot in (OptionType.CALL, OptionType.PUT):
+                out.append(Contract(
+                    underlying=symbol.upper(), occ_symbol=f"{symbol}{int(k)}{ot.value}",
+                    option_type=ot, strike=round(k, 1), expiration=expiration, dte=30,
+                    bid=round(mid * 0.98, 2), ask=round(mid * 1.02, 2), last=round(mid, 2),
+                    volume=500, open_interest=1000))
+        return out
+
+
+def test_max_results_caps_the_market_board(monkeypatch):
+    """The sweep honors the same ceiling and surfaces it in the notes."""
+    import app.market as market
+
+    prices = {f"SYM{i:02d}": 50.0 + i for i in range(20)}
+    monkeypatch.setattr(market, "_universe_cache", list(prices.keys()))
+    monkeypatch.setattr(market.settings, "max_results", 5)
+
+    top, notes = market.run_market_sweep(
+        {"side": "both", "limit": 50}, _SweepProvider(prices), Store(":memory:"),
+        lambda *a: None,
     )
+    assert len(top) == 5
+    assert any("MAX_RESULTS caps" in n for n in notes)
+
+
+def test_scan_symbol_itself_stays_uncapped(monkeypatch):
+    """The ceiling lives at the request boundary, not in the ranking core."""
+    prov, store = _many_calls_provider(20), Store(":memory:")
+    res = scan_symbol("TEST", prov, store, 100.0, 0.0, 0.30,
+                      ScanFilters(side="calls"), settings=Settings(max_results=2))
+    assert len(res.scored) == 20

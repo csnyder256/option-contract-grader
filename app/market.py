@@ -343,7 +343,11 @@ def run_market_sweep(params: dict, provider, store, progress_cb,
 
     # --- Stage 4: global rank + per-name board cap -> Top N ---------------
     all_scored.sort(key=lambda sc: sc.overall_score, reverse=True)
-    limit = int(params.get("limit") or 50)
+    requested = int(params.get("limit") or 50)
+    # MAX_RESULTS is the server-side ceiling on the returned board; the sweep's
+    # own `limit` can only narrow it (0 = no cap).
+    cap = settings.max_results
+    limit = requested if (not cap or cap <= 0) else min(requested, cap)
     board_cap = max(1, settings.per_name_board_cap)
     top: list = []
     per_name: Dict[str, int] = {}
@@ -384,6 +388,10 @@ def run_market_sweep(params: dict, provider, store, progress_cb,
         f"Scored {len(all_scored)} contracts; showing top {len(top)} across "
         f"{len(per_name)} names (max {board_cap} per name)."
     )
+    if cap and cap > 0 and requested > cap:
+        notes.append(
+            f"Requested {requested} results; MAX_RESULTS caps a sweep at {cap}."
+        )
     if price_failed:
         notes.append("Unpriced examples: " + ", ".join(price_failed[:6]) + " ...")
     if chain_failed:

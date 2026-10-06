@@ -142,6 +142,31 @@ def test_scan_notes_flag_default_dte_window(client):
     assert any("defaulted to expirations" in n for n in notes)
 
 
+def test_scan_note_is_honest_when_the_default_dte_band_is_empty(monkeypatch):
+    """The default-window note must not claim a window the scan never applied.
+
+    A name whose only listed expiration is 3 DTE has nothing inside the default
+    14-60 DTE window, so the scan falls back to the nearest expiration that
+    exists. The note has to say that, not "defaulted to expirations 14-60 DTE".
+    """
+    class OnlyShortDte(FakeProvider):
+        def get_expirations(self, symbol):
+            return [date.today() + timedelta(days=3)]
+
+    monkeypatch.setattr(api, "_provider", OnlyShortDte())
+    monkeypatch.setattr(api, "_store", Store(":memory:"))
+    r = TestClient(app).post("/scan", json={"ticker": "AAPL"})
+    assert r.status_code == 200
+    body = r.json()
+    notes = body["meta"]["notes"]
+    assert not any("defaulted to expirations" in n for n in notes)
+    assert any("DTE window" in n and "nearest" in n for n in notes)
+    # and it really did scan the only expiration that exists
+    assert body["meta"]["scanned_expirations"] == [
+        (date.today() + timedelta(days=3)).isoformat()
+    ]
+
+
 # --- /market/scan + /market/status ----------------------------------------- #
 
 def test_market_scan_starts_and_status_polls(monkeypatch, client):
