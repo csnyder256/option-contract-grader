@@ -178,16 +178,34 @@ def run_scan(req: ScanRequest, provider: OptionsDataProvider, store: Store) -> d
         expiration_from=req.expiration_from, expiration_to=req.expiration_to,
     )
     res = scan_symbol(symbol, provider, store, S, q, hv, filters)
-    results = [sc.to_dict() for sc in res.scored][: req.limit]
+    # MAX_RESULTS is the server-side ceiling on how many graded contracts a
+    # single request may return; the request's own `limit` can only narrow it.
+    cap = settings.max_results
+    limit = req.limit if (not cap or cap <= 0) else min(req.limit, cap)
+    results = [sc.to_dict() for sc in res.scored][: limit]
 
     notes = []
     dn = _delayed_note()
     if dn:
         notes.append(dn)
     if req.expiration_from is None and req.expiration_to is None:
+        if res.default_band_empty:
+            # The 14-60 DTE window matched nothing, so the scan fell back to the
+            # nearest expirations that exist. Say that, rather than claiming a
+            # window that was never applied.
+            notes.append(
+                f"No expiration fell in the default {settings.default_min_dte}-"
+                f"{settings.default_max_dte} DTE window; scanned the nearest "
+                f"available expiration(s) instead. Set a date range to choose."
+            )
+        else:
+            notes.append(
+                f"No date range given - defaulted to expirations {settings.default_min_dte}-"
+                f"{settings.default_max_dte} DTE (the buyer sweet spot). Set a range to override."
+            )
+    if cap and cap > 0 and req.limit > cap:
         notes.append(
-            f"No date range given - defaulted to expirations {settings.default_min_dte}-"
-            f"{settings.default_max_dte} DTE (the buyer sweet spot). Set a range to override."
+            f"Requested {req.limit} results; MAX_RESULTS caps a single scan at {cap}."
         )
     if res.truncated:
         notes.append(

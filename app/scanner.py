@@ -36,6 +36,11 @@ class SymbolScan:
     total_matching_exps: int
     truncated: bool
     snap_count: int
+    # True only when no explicit range was given AND the default DTE window held
+    # no expirations, so the scan fell back to whatever exists. The caller uses
+    # this to say what actually happened instead of claiming a window it never
+    # applied (see app/api.py's default-DTE note).
+    default_band_empty: bool = False
 
 
 def premium_ok(c: Contract, premium_min: Optional[float], premium_max: Optional[float]) -> bool:
@@ -52,7 +57,10 @@ def premium_ok(c: Contract, premium_min: Optional[float], premium_max: Optional[
 def select_expirations(all_exps, exp_from, exp_to, today, settings):
     """Honor an explicit date range, else default to the buyer DTE window; then cap.
 
-    Returns (chosen_exps, total_matching, truncated).
+    Returns (chosen_exps, total_matching, truncated, band_empty). ``band_empty``
+    is True only when no explicit range was given *and* the default DTE window
+    matched nothing, so the caller can report the fallback instead of claiming a
+    window it never used.
     """
     has_range = exp_from is not None or exp_to is not None
     if has_range:
@@ -61,14 +69,16 @@ def select_expirations(all_exps, exp_from, exp_to, today, settings):
             if (exp_from is None or e >= exp_from) and (exp_to is None or e <= exp_to)
         ]
         hard_cap = 24
+        band_empty = False
     else:
         band = [
             e for e in all_exps
             if settings.default_min_dte <= (e - today).days <= settings.default_max_dte
         ]
+        band_empty = not band
         pool = band if band else list(all_exps)
         hard_cap = settings.max_expirations
-    return pool[:hard_cap], len(pool), len(pool) > hard_cap
+    return pool[:hard_cap], len(pool), len(pool) > hard_cap, band_empty
 
 
 def scan_symbol(
@@ -85,7 +95,7 @@ def scan_symbol(
     r = settings.risk_free_rate
 
     all_exps = provider.get_expirations(symbol)
-    exps, total_matching, truncated = select_expirations(
+    exps, total_matching, truncated, default_band_empty = select_expirations(
         all_exps, filters.expiration_from, filters.expiration_to, today, settings
     )
 
@@ -128,4 +138,5 @@ def scan_symbol(
     return SymbolScan(
         scored=scored, atm_iv=atm_iv, rank_value=rank_value, exps=exps,
         total_matching_exps=total_matching, truncated=truncated, snap_count=snap_count,
+        default_band_empty=default_band_empty,
     )

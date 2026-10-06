@@ -264,6 +264,7 @@ All 25 knobs are environment variables read in `app/config.py` and documented in
 | `MAX_SPREAD_PCT` | `0.15` | Spread above this trips the hard liquidity cap |
 | `MIN_OPEN_INTEREST` | `50` | Open interest below this trips the same cap |
 | `MAX_CHAIN_SCANS` | `2000` | Cap on in-band names a sweep fetches chains for (0 = no cap) |
+| `MAX_RESULTS` | `100` | Server-side ceiling on graded contracts a single request returns (0 = no cap) |
 | `REALTIME_CHAIN_THRESHOLD` | `300` | At or below this many in-band names, route chains to Tradier |
 | `PER_NAME_BOARD_CAP` | `2` | Contracts allowed per underlying on the final board |
 | `SWEEP_MAX_WORKERS` | `4` | Thread-pool width for the sweep's price pre-pass |
@@ -275,10 +276,10 @@ All 25 knobs are environment variables read in `app/config.py` and documented in
 
 ```bash
 pytest -q
-# 82 passed
+# 143 passed
 ```
 
-73 test functions across six modules, 82 cases after parametrization (only `test_iv_roundtrip` is parametrized, 5 sigmas by 2 option types).
+120 test functions across ten modules, 143 cases after parametrization (several are parametrized — `test_iv_roundtrip` over 5 sigmas by 2 option types, plus the side, timestamp, non-finite and bad-band cases).
 
 Everything runs offline. No network access, no mocking library, no recorded-cassette dependency. Every network parser is a pure module-level function that takes a dict, so the provider tests feed it literal payloads. The two retry-path tests monkeypatch a fake transport.
 
@@ -288,9 +289,12 @@ Everything runs offline. No network access, no mocking library, no recorded-cass
 - `test_tradier.py`: scalar-vs-array collapse normalization, all four parsers, empty payloads are safe, batch-quote keying and chunking, the combined price+history path.
 - `test_failures_surface.py` (**new**): the whole "a failure must not look like an answer" class. Crossed and one-sided books, future-dated IV history, CBOE and Tradier non-200 / unparseable / JSON-non-object / `errors`-block responses, the shared `check_status` contract, and every inverted request range. Also the negative cases: a well-formed response with zero options is still a normal empty result, and a locked market (`ask == bid`) is still a market. Finally, the real `TestClient` endpoint tests: a malformed feed through `/scan` is `502` with the reason named, a healthy empty feed is `200` with an empty board, and inverted or blank requests are `422` with the provider stubbed to raise if it is ever touched (proving validation runs before any feed work).
 - `test_market.py`: universe parsing, store round-trip, price-band pruning, descending sort, the distinct-names board cap regression, chain-failure counting surfaced in notes, budget truncation wording, order-independence (no alphabet bias), the cross-midnight TTL fix, and an end-to-end background sweep polled to completion through the real state machine.
-- `test_api.py`: `TestClient` coverage of the five endpoints (no network, stubbed provider/store) — `/health`, `/key`, `/scan` (ranked results, side filtering, 422 on blank ticker, 502 on a feed error, limit handling, the default-DTE note), `/market/scan` + `/market/status` polled to completion, and `/` serving the frontend. It also pins the `side` contract: `calls`/`put`/`all` aliases normalize, and an unknown side is rejected (HTTP 422) instead of silently widening to both sides.
+- `test_api.py`: `TestClient` coverage of the five endpoints (no network, stubbed provider/store) — `/health`, `/key`, `/scan` (ranked results, side filtering, 422 on blank ticker, 502 on a feed error, limit handling, the default-DTE note and its honest empty-band variant), `/market/scan` + `/market/status` polled to completion, and `/` serving the frontend. It also pins the `side` contract: `calls`/`put`/`all` aliases normalize, and an unknown side is rejected (HTTP 422) instead of silently widening to both sides.
+- `test_market_request.py`: the sweep's request boundary and the config knobs it honors — the `side` contract at `/market/scan` (an unknown side is `422` before any sweep starts), the shared provider-level `filter_side`, and the `MAX_RESULTS` ceiling on both `/scan` and the market board.
+- `test_scenarios.py`: the offline scenario simulator and its exports — expiry payoff and fee scaling, monotonicity and put-call parity, input validation (including an unreachable put break-even), exact reconciliation of the grade trace, and deterministic JSON/CSV/HTML reports with escaped labels.
+- `test_store_iv_history.py`: the append-only daily IV series (first-write-wins, so an intraday re-scan cannot rewrite a completed day) and the price/HV cache's observation-time semantics, including the cross-midnight TTL and the sweep not re-stamping a price it already held.
 
-Roughly a 1:2.4 test-to-application line ratio (1,198 test lines against 2,843 application lines).
+Roughly a 1:1.4 test-to-application line ratio (2,251 test lines against 3,263 application lines).
 
 **Gaps, named honestly:** the HTTP endpoints are exercised through `TestClient` in `test_failures_surface.py` (validation and the feed-failure paths), but there is no browser or integration suite over the real network feeds, and no tests of the frontend JavaScript.
 
@@ -313,7 +317,7 @@ This repo is a sanitized copy of a working local install. The exclusions are enf
 
 ## Status and known rough edges
 
-Working and used. The version string in `app/api.py` is `0.2.0`. Honest caveats:
+Working and used. The version string in `app/api.py` is `0.3.0`. Honest caveats:
 
 - **No packaging, but there is CI now.** There is no `pyproject.toml`, no `setup.py`, and no lockfile. There *is* a `.github/workflows/ci.yml` (added since this repo's first public push): it runs `python -m pytest -q` on Python 3.12 for every push to `main` and every PR. The test number above is the local run.
 - **BSM is European; US equity options are American.** Inverting a European model against an American premium is an approximation. It is a good one for the non-dividend, non-deep-ITM majority of the board, and it is wrong at the edges. Early exercise is not modeled.
@@ -323,7 +327,6 @@ Working and used. The version string in `app/api.py` is `0.2.0`. Honest caveats:
 - **Stale copy is now cleaned up.** The frontend tab was relabeled from "Market (S&P 500 + ETFs)" to "Market (full optionable universe)" in this pass, and the `app/market.py` module docstring's "curated universe" was corrected at the same time. Both leftovers predated the OCC universe landing; the behavior was already correct, only the labels were behind.
 - **The two providers now fail the same way, from different transports.** Both raise `FeedError` for a non-200, an unparseable body, or an `errors` block, after their own retry policies are exhausted. `cboe.py` retries 403/429/5xx with jittered backoff; `tradier.py` retries 429 only. The *retry* policies still differ (documented above); the error *contract* no longer does.
 - **Config drift.** `.env.example` ships `MAX_CHAIN_SCANS=1500` while the built-in default in `config.py` is `2000`. The example is the lighter, faster setting.
-- **`MAX_RESULTS` is documented and wired to nothing.** `.env.example` says it caps "max scored contracts returned by a single scan," and `settings.max_results` is read in `app/config.py`, but no code path ever references it: `/scan` returns `req.limit` (`ScanRequest.limit`, default 50, max 500) and the sweep returns `limit`. Turning the knob changes nothing. Either wire it or drop it; today it is a documented lie, which is why it is listed here rather than quietly left out.
 - **This is a calculator, not a broker.** It places no orders and connects to no execution venue. A letter grade summarizes seven measurable properties of a contract at a point in time; it is not advice and none of the output should be read as a recommendation.
 
 Roadmap, in rough priority order: an American-option pricer (binomial or Bjerksund-Stensland) for the early-exercise cases, persisting sweep results so a completed board survives a restart, and a shared retry policy so the two providers stop differing in backoff as well as transport.
@@ -333,6 +336,8 @@ Roadmap, in rough priority order: an American-option pricer (binomial or Bjerksu
 - **Feed failures have a consistent HTTP error contract.** Non-200 status, an unparseable body, and JSON non-object bodies raise a typed `FeedError`, which `/scan` maps to HTTP 502 with the reason. Previously, Tradier could expose untyped `HTTPStatusError` or `ValueError` failures, and Yahoo chart decoding could expose `ValueError`. The first version of this branch also collapsed Tradier non-object JSON to an empty object; the follow-up corrects that regression. A healthy empty chain remains HTTP 200. These HTTP outcomes are covered through the real app with `TestClient`.
 - **IV history cannot read the future.** `get_iv_history` and `snapshot_count` exclude rows dated after today, so a phantom future snapshot can no longer move IV rank or percentile.
 - **An impossible filter is rejected, not answered.** Inverted expiration, premium, price, and DTE ranges, and a whitespace-only ticker, return `422` with the specific mismatch instead of an empty result set.
+- **`MAX_RESULTS` is enforced, not decorative.** It was documented in `.env.example` and assigned in `app/config.py` but read by no code path, so turning it changed nothing. It is now the server-side ceiling on how many graded contracts a single request returns: `/scan` and the market sweep both cap at `min(limit, MAX_RESULTS)` (`0` disables the cap), and the response notes when a request was capped. `test_max_results_caps_a_scan_through_the_api` and `test_max_results_caps_the_market_board` pin it.
+- **The default-DTE note no longer claims a window it did not apply.** When no date range is given and nothing falls inside the default 14-60 DTE window, `select_expirations` falls back to the nearest expirations that exist; the note now says that instead of reporting "defaulted to expirations 14-60 DTE". `test_scan_note_is_honest_when_the_default_dte_band_is_empty` pins it.
 
 **Not fixed by this pass, despite an earlier draft of this file saying so:** the crossed-book claim was wrong. `has_two_sided_market` already required `ask >= bid` on `main` before this branch existed, so there was no crossed-book bug to fix here; what this pass adds is regression coverage (crossed, one-sided, and locked markets). Both the CBOE options and Yahoo chart paths already checked non-200 HTTP status before parsing. The shared helper adds typed JSON decoding and shape errors; the existing status checks are preserved. Both corrections are recorded rather than quietly dropped.
 

@@ -17,4 +17,13 @@ assert (root / "docs/releases" / ("v" + version + ".md")).is_file(), "Release no
 notes = root / "docs/releases" / ("v" + version + ".md")
 deployment_link = "https://github.com/csnyder256/" + config["name"] + "/blob/v" + version + "/DEPLOYMENT.md"
 assert "(" + deployment_link + ")" in notes.read_text(), "Release notes need a version-specific deployment link"
+# The deployment guide itself must name THIS version. It once pointed at an older
+# bundle while every other metadata check passed, so a reader following the
+# release's own install link was told to download the wrong release.
+bundle = re.search(r"Download the `v([0-9]+\.[0-9]+\.[0-9]+)` deployment bundle",
+                   (root / "DEPLOYMENT.md").read_text())
+assert bundle, "DEPLOYMENT.md must name the deployment bundle version"
+assert bundle.group(1) == version, (
+    "DEPLOYMENT.md points at v" + bundle.group(1) + " but VERSION is " + version
+)
 print("Release metadata agrees on", version)

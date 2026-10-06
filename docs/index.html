@@ -365,7 +365,7 @@ uvicorn app.api:app --reload
 # open http://localhost:8000</code></pre>
     </div>
     <p class="prose">Six dependencies total: five runtime plus pytest. The frontend is vanilla JavaScript with no build step and no packages. On Windows, <code>setup.bat</code> and <code>start.bat</code> do the same thing without a terminal.</p>
-    <p class="prose"><strong>Tests:</strong> 40 test functions across five modules, 49 cases, all fully offline with no network and no mocking library. Verified in a clean virtualenv on Python 3.14: 49 passed in 2.14s.</p>
+    <p class="prose"><strong>Tests:</strong> 120 test functions across ten modules, 143 cases, all fully offline with no network and no mocking library. CI runs them on Python 3.12 for every push and pull request.</p>
   </div>
 </section>
 
@@ -373,14 +373,14 @@ uvicorn app.api:app --reload
   <div class="wrap">
     <h2>Honest caveats</h2>
     <ul class="tight" style="max-width:66ch">
-      <li>No packaging and no CI. No pyproject, no lockfile, no workflow. The test number is one run locally.</li>
+      <li>No packaging yet: no <code>pyproject.toml</code> and no lockfile. CI does exist (<code>.github/workflows/ci.yml</code>) and runs the full offline suite on every push and pull request.</li>
       <li>Black-Scholes-Merton is European; US equity options are American. Early exercise is not modeled, so the edges of the board are approximations.</li>
       <li>The free CBOE and Yahoo endpoints are public but undocumented. That is why retry, backoff, and failure counting exist.</li>
       <li>"Top 50 across the market" is bounded by the scan budget. The notes always say which slice was actually covered.</li>
-      <li>No HTTP-level tests of the five endpoints, and no frontend JavaScript tests.</li>
+      <li>The HTTP endpoints are covered through <code>TestClient</code>, but there is no browser or integration suite over the real network feeds, and no tests of the frontend JavaScript.</li>
       <li>This is a calculator, not a broker. It places no orders and none of its output is advice.</li>
     </ul>
-    <p class="prose" style="margin-top:1.5rem">The full list, including two known stale UI labels and a config drift between <code>.env.example</code> and the built-in default, is in the <a href="https://github.com/csnyder256/option-contract-grader#status-and-known-rough-edges">repository README</a>.</p>
+    <p class="prose" style="margin-top:1.5rem">The full list, including a config drift between <code>.env.example</code> and the built-in default, is in the <a href="https://github.com/csnyder256/option-contract-grader#status-and-known-rough-edges">repository README</a>.</p>
   </div>
 </section>
 

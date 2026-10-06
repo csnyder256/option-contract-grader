@@ -2,7 +2,7 @@
 
 ## Container install
 
-Download the `v0.2.1` deployment bundle from [Releases](https://github.com/csnyder256/option-contract-grader/releases), verify its SHA-256 against `checksums.txt`, and extract it. From that folder:
+Download the `v0.3.0` deployment bundle from [Releases](https://github.com/csnyder256/option-contract-grader/releases), verify its SHA-256 against `checksums.txt`, and extract it. From that folder:
 
 ```sh
 docker compose -p option-grader up --build -d
