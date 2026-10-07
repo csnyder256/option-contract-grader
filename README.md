@@ -35,10 +35,11 @@ The vendor's numbers are not the numbers you are trading against. Tradier's IV a
 
 The solver in `app/engine/blackscholes.py` is not a naive Newton loop:
 
-- It checks the no-arbitrage bounds first. Below discounted intrinsic, or above discounted spot (calls) / discounted strike (puts), there is no valid sigma and it returns `None`.
+- It checks the no-arbitrage bounds first. At or below discounted intrinsic, or above discounted spot (calls) / discounted strike (puts), there is no valid sigma and it returns `None`.
 - It seeds with the Brenner-Subrahmanyam ATM approximation instead of a blind 0.20.
 - It runs Newton-Raphson on Vega, and bails out to a 200-iteration bisection over `[1e-4, 5.0]` the moment Vega drops under `1e-10` or sigma leaves the sensible region.
 - If the bracket has no sign change, it returns `None` rather than a spurious root. A garbage IV would poison four of the seven sub-scores, so no answer beats a wrong one.
+- It treats a price sitting **on** the intrinsic floor as unsolvable, not just a price below it. The floor is the `sigma -> 0+` limit of the model price, and the price is flat in sigma there, so Newton and the bisection each converge on whichever sigma their tolerance happens to admit — an artifact of the solver, not a market observation. Deep-in-the-money contracts are the live path into it: their quoted mid lands exactly on intrinsic whenever the bid/ask straddles it, and short-dated deep-ITM names do that routinely. Rejecting the floor sends those contracts down the documented vendor-IV fallback (flagged) instead of grading them on a fabricated number.
 
 When the solve fails the contract is not silently dropped and it is not silently faked. It falls back to the vendor IV and carries the flag `Using vendor IV (couldn't solve from price)`. If there is no clean IV at all, the flag reads `No clean IV (illiquid / one-sided market)`. That fallback path is why "does not trust vendor Greeks" is a description of behavior rather than a slogan.
 

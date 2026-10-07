@@ -138,15 +138,29 @@ def implied_vol(
     """Recover implied volatility by inverting BSM from a market price.
 
     Newton-Raphson on Vega with a bisection fallback. Returns ``None`` when the
-    price is below intrinsic / outside the arbitrage bounds or no root is found
-    (e.g. illiquid, crossed, or no two-sided market).
+    price is at/below intrinsic or outside the arbitrage bounds, or no root is
+    found (e.g. illiquid, crossed, or no two-sided market).
+
+    A price sitting on the intrinsic floor is rejected too. The floor is the
+    ``sigma -> 0+`` limit of the model price, and the model price is flat in
+    sigma in that neighborhood, so Newton and the bisection will each converge
+    on whichever sigma their tolerance happens to admit. That sigma is an
+    artifact of the solver, not a market observation -- and deep-in-the-money
+    contracts, whose quoted mid routinely lands exactly on intrinsic, are a
+    live path into it. No answer beats a wrong one, so the floor returns None.
     """
     if price is None or price <= 0 or T <= 0 or S <= 0 or K <= 0:
         return None
 
     lower = _intrinsic_lower_bound(S, K, r, q, T, option_type)
-    if price < lower - 1e-8:
-        return None  # price below no-arbitrage floor; cannot be a valid premium
+    # Reject a price at the floor as well as below it. The margin is a fraction
+    # of the underlying price so it means the same thing for a $2 name and a
+    # $2,000 one: 1e-8 of spot is a ten-thousandth of a cent on a $100 stock --
+    # far below any tradeable premium, but orders of magnitude above the
+    # double-precision noise (~1e-14 relative) at that scale.
+    floor_margin = 1e-8 * max(1.0, S)
+    if price <= lower + floor_margin:
+        return None  # no time value above intrinsic -> no recoverable sigma
     # Upper bound: a call can't exceed the (discounted) spot; a put can't exceed K.
     upper_bound = S * math.exp(-q * T) if option_type == OptionType.CALL else K * math.exp(-r * T)
     if price >= upper_bound:
