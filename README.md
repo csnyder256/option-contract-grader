@@ -107,7 +107,7 @@ Dependency flow is one-way: frontend to `api.py`, `api.py` to `scanner.py` and `
 | `app/engine/scoring.py` | 270 | The seven sub-scores, the composite, the liquidity gate, the English strings. |
 | `app/engine/grading.py` | 41 | Score to letter plus meaning, and the `grade_key()` the UI legend reads. |
 | `app/providers/base.py` | 117 | Abstract `OptionsDataProvider` (four required methods) plus `FeedError`, the shared `check_status` HTTP contract, and two optional-optimization hooks with working defaults. |
-| `app/providers/cboe.py` | 366 | Pure parser functions plus a thin networked class. OCC symbol parsing, symbol-spelling fallbacks, in-process chain cache, and a non-200 / non-JSON guard on every fetch. |
+| `app/providers/cboe.py` | 366 | Pure parser functions plus a thin networked class. OCC symbol parsing, symbol-spelling fallbacks, a bounded in-process chain cache (expired entries pruned, oldest evicted past the cap), and a non-200 / non-JSON guard on every fetch. |
 | `app/providers/tradier.py` | 362 | Same pure-parser / client split, but a different retry policy (429 only). Batched quotes, scalar-vs-array normalization, client-side rate limiting at 118 requests/minute against a 120 cap, and the same `FeedError` contract as CBOE. |
 | `app/scanner.py` | 131 | The shared per-symbol core described above. |
 | `app/market.py` | 373 | Universe loading, the locked background state machine, and `run_market_sweep` as a testable function taking a progress callback and injectable providers. |

@@ -204,7 +204,7 @@ class CboeProvider(OptionsDataProvider):
     YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
 
     def __init__(self, default_dividend_yield: Optional[float] = None, timeout: float = 20.0,
-                 cache_ttl: float = 30.0):
+                 cache_ttl: float = 30.0, max_cache_entries: int = 32):
         self.default_q = (
             default_dividend_yield if default_dividend_yield is not None
             else settings.default_dividend_yield
@@ -219,6 +219,19 @@ class CboeProvider(OptionsDataProvider):
             timeout=timeout, follow_redirects=True,
         )
         self._cache_ttl = cache_ttl
+        # The chain cache is bounded, and it has to be. It exists only to reuse
+        # ONE HTTP fetch for get_expirations() plus the per-expiration
+        # get_chain() calls inside a single scan -- a window of milliseconds,
+        # with at most a handful of symbols in flight (the sweep runs
+        # SWEEP_MAX_WORKERS threads). It is not a store: one entry is a symbol's
+        # ENTIRE delayed-quote payload, measured 2026-10-06 at ~1.6 MB of JSON
+        # for AAPL and ~5.9 MB for SPY, and ~5.3 MB again as parsed Python
+        # objects for AAPL alone. Left unbounded, a market sweep retains one
+        # payload per scanned name forever, so a 1,500-name sweep leaves
+        # multiple GB resident on a server built to run continuously.
+        # ``max_cache_entries <= 0`` disables the cap; expired entries are still
+        # pruned either way.
+        self.max_cache_entries = max_cache_entries
         self._chain_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         self._retries = settings.feed_retries
         self._backoff_base = settings.feed_backoff_base
@@ -267,16 +280,42 @@ class CboeProvider(OptionsDataProvider):
         """Fetch (and briefly cache) the full CBOE chain JSON for a symbol.
 
         Cached so get_expirations() + per-expiration get_chain() calls within one
-        scan reuse a single HTTP request.
+        scan reuse a single HTTP request. The cache is pruned on every access --
+        expired entries dropped, oldest evicted once it exceeds
+        ``max_cache_entries`` -- so a long-running server cannot accumulate one
+        multi-MB payload per name it has ever scanned (see the constructor note).
         """
         key = symbol.upper()
         now = time.monotonic()
+        self._prune_chain_cache(now)
         hit = self._chain_cache.get(key)
         if hit and now - hit[0] < self._cache_ttl:
             return hit[1]
         payload = self._get_options_json(key)
         self._chain_cache[key] = (now, payload)
+        self._prune_chain_cache(now)
         return payload
+
+    def _prune_chain_cache(self, now: float) -> None:
+        """Drop expired chain-cache entries, then evict the oldest past the cap.
+
+        Called on every cache access. Expiry alone does not bound the cache: a
+        sweep touches every name inside the TTL window, so all of them look
+        fresh for as long as it runs. The entry cap is what keeps a large sweep
+        from retaining one full chain payload per scanned name.
+        """
+        ttl = self._cache_ttl
+        if ttl and ttl > 0:
+            stale = [k for k, (ts, _) in self._chain_cache.items() if now - ts >= ttl]
+            for k in stale:
+                self._chain_cache.pop(k, None)
+        cap = self.max_cache_entries
+        if cap and cap > 0:
+            overflow = len(self._chain_cache) - cap
+            if overflow > 0:
+                oldest = sorted(self._chain_cache.items(), key=lambda kv: kv[1][0])
+                for k, _ in oldest[:overflow]:
+                    self._chain_cache.pop(k, None)
 
     def _get_options_json(self, symbol: str) -> Dict[str, Any]:
         # Equities/ETFs use the plain symbol; indices use a leading underscore;
