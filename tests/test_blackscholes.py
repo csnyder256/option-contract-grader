@@ -42,6 +42,54 @@ def test_iv_below_intrinsic_returns_none():
     assert bs.implied_vol(1.0, S, K, r, q, T, OptionType.CALL) is None
 
 
+def test_price_at_the_intrinsic_floor_has_no_implied_vol():
+    """A mid sitting on intrinsic carries no volatility information.
+
+    The floor is the sigma -> 0+ limit of the model price and the model price
+    is flat in sigma there, so the solver used to return whichever root its
+    convergence tolerance admitted (0.372 for this contract) instead of the
+    None this module promises. A deep-in-the-money contract's mid lands exactly
+    on intrinsic whenever the quote straddles it -- common for short-dated
+    deep-ITM names -- so this is a live path into a garbage IV, and a garbage
+    IV feeds four of the seven sub-scores.
+    """
+    S, K, r, q, T = 100, 80, 0.04, 0.0, 5 / 365
+    floor = bs._intrinsic_lower_bound(S, K, r, q, T, OptionType.CALL)
+    price = bs.bs_price(S, K, r, q, 0.10, T, OptionType.CALL)
+    assert price == pytest.approx(floor, abs=1e-9)   # the model price is the floor here
+    assert bs.implied_vol(price, S, K, r, q, T, OptionType.CALL) is None
+    assert bs.implied_vol(floor, S, K, r, q, T, OptionType.CALL) is None
+
+
+def test_floor_guard_leaves_a_tradeable_premium_solvable():
+    """Real time value above the floor is still a solvable, honest price."""
+    S, K, r, q, T = 100, 80, 0.04, 0.0, 30 / 365
+    floor = bs._intrinsic_lower_bound(S, K, r, q, T, OptionType.CALL)
+    iv = bs.implied_vol(floor + 0.05, S, K, r, q, T, OptionType.CALL)
+    assert iv is not None
+    assert iv > 0
+    # And the ordinary out-of-the-money case is untouched.
+    price = bs.bs_price(S, 110, r, q, 0.25, T, OptionType.CALL)
+    assert bs.implied_vol(price, S, 110, r, q, T, OptionType.CALL) == pytest.approx(0.25, abs=1e-4)
+
+
+def test_worthless_premium_is_not_given_a_volatility():
+    """A premium at the floating-point floor is noise, not an observation.
+
+    Pre-fix this returned the seed (0.05): an out-of-the-money contract worth a
+    trillionth of a dollar was handed a 5% implied vol and graded on it.
+    """
+    assert bs.implied_vol(1e-12, 100, 110, 0.04, 0.0, 5 / 365, OptionType.CALL) is None
+
+
+def test_floor_guard_scales_with_the_underlying():
+    # The margin is a fraction of spot, so a $2 name is judged the same way a
+    # $2,000 name is: at the floor -> None, a cent of time value -> solvable.
+    S, K, r, q, T = 2.0, 3.0, 0.04, 0.0, 30 / 365
+    assert bs.implied_vol(1e-9, S, K, r, q, T, OptionType.CALL) is None
+    assert bs.implied_vol(0.01, S, K, r, q, T, OptionType.CALL) is not None
+
+
 def test_greek_signs():
     S, K, r, q, sigma, T = 100, 100, 0.04, 0.0, 0.25, 0.5
     call = bs.greeks(S, K, r, q, sigma, T, OptionType.CALL)
