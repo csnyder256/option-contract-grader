@@ -159,3 +159,62 @@ def test_options_json_tries_candidates_then_feederror(monkeypatch):
     p = _provider_with([_Resp(404)], monkeypatch)
     with pytest.raises(FeedError):
         p.get_expirations("NOPE")
+
+
+# --- the in-process chain cache must stay bounded --------------------------- #
+#
+# The cache exists to reuse ONE HTTP fetch for get_expirations() plus the
+# per-expiration get_chain() calls inside a single scan -- a window of
+# milliseconds. It is not a store: one entry is a symbol's ENTIRE delayed-quote
+# payload, measured 2026-10-06 at ~1.6 MB of JSON for AAPL and ~5.9 MB for SPY,
+# and ~5.3 MB again as parsed Python objects for AAPL alone. Left unbounded, a
+# market sweep retains one payload per scanned name forever, so a 1,500-name
+# sweep leaves multiple GB resident on a server built to run continuously.
+# These tests can be run unmodified against the pre-fix source: the cap is
+# simply never applied there, so the cache grows to one entry per name and
+# nothing is ever evicted.
+
+def _payload(symbol: str = "X"):
+    """A minimal well-formed CBOE options payload."""
+    return {"data": {"symbol": symbol, "options": [
+        {"option": f"{symbol}260717C00100000", "bid": 1.0, "ask": 1.2, "iv": 0.3,
+         "open_interest": 100, "volume": 10, "delta": 0.5, "gamma": 0.01,
+         "theta": -0.01, "vega": 0.1, "rho": 0.01, "last_trade_price": 1.1}
+    ]}}
+
+
+def test_chain_cache_is_bounded_by_max_entries(monkeypatch):
+    p = _provider_with([_Resp(200, _payload())], monkeypatch)
+    p.max_cache_entries = 8
+    for i in range(200):
+        p.get_expirations(f"SYM{i:03d}")
+    assert len(p._chain_cache) <= 8
+
+
+def test_default_cap_bounds_a_sweep_sized_cache(monkeypatch):
+    p = _provider_with([_Resp(200, _payload())], monkeypatch)
+    assert p.max_cache_entries and p.max_cache_entries < 200
+    for i in range(200):
+        p.get_expirations(f"S{i:03d}")
+    assert len(p._chain_cache) <= p.max_cache_entries
+
+
+def test_chain_cache_evicts_entries_past_the_ttl(monkeypatch):
+    p = _provider_with([_Resp(200, _payload())], monkeypatch)
+    p.get_expirations("OLD")
+    assert "OLD" in p._chain_cache
+    ts, payload = p._chain_cache["OLD"]
+    p._chain_cache["OLD"] = (ts - p._cache_ttl - 1.0, payload)   # age it out
+    p.get_expirations("NEW")
+    assert "OLD" not in p._chain_cache
+    assert "NEW" in p._chain_cache
+
+
+def test_chain_cache_still_reuses_a_fresh_payload(monkeypatch):
+    """The bound must not break the one-fetch reuse it exists for."""
+    p = _provider_with([_Resp(200, _payload("AAPL"))], monkeypatch)
+    p.get_expirations("AAPL")
+    p.get_expirations("AAPL")
+    p.get_chain("AAPL", date(2026, 7, 17))
+    assert p._client.calls == 1
+
