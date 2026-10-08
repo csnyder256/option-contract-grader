@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import io
 import json
 
@@ -82,3 +83,37 @@ def test_api_reports_are_deterministic_network_free_and_escape_input(monkeypatch
     exported=client.post("/scenario/report?format=json",json=req)
     assert json.loads(exported.text)==first.json()
     assert client.post("/scenario/report?format=unsupported",json=req).status_code==422
+
+
+def test_engine_fingerprint_covers_every_module_that_can_change_the_report():
+    """The engine fingerprint must pin the whole recipe, not a hand-picked slice.
+
+    The first version hashed three hardcoded engine filenames and silently
+    omitted ``engine/volatility.py`` (the IV-vs-HV term behind the volatility
+    sub-score) and ``config.py`` (the sub-score weights, the grade bands and the
+    liquidity thresholds). So a changed weight moved the letter grade while the
+    reported ``engine_sha256`` stayed byte-identical: the report's
+    reproducibility fingerprint did not identify the code that produced the
+    score. This pins the covered set; run it against the pre-fix source and the
+    digest is the three-file one, so it fails.
+    """
+    from pathlib import Path
+
+    import app.scenarios as scenarios
+
+    doc = simulate(ScenarioRequest(bid=3.0, ask=3.2, open_interest=1000))
+    app_dir = Path(scenarios.__file__).resolve().parent
+    covered = sorted(p for p in (app_dir / "engine").glob("*.py")) + [
+        app_dir / "config.py", app_dir / "models.py", app_dir / "scenarios.py",
+    ]
+    expected = hashlib.sha256(b"".join(p.read_bytes() for p in covered)).hexdigest()
+    assert doc["provenance"]["engine_sha256"] == expected
+
+    # The exact omission that caused the bug: the three-file digest the first
+    # version produced must not be what the report carries.
+    old = hashlib.sha256(b"".join(
+        (app_dir / "engine" / n).read_bytes()
+        for n in ("blackscholes.py", "scoring.py", "grading.py")
+    )).hexdigest()
+    assert doc["provenance"]["engine_sha256"] != old
+

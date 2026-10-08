@@ -22,6 +22,29 @@ router = APIRouter()
 Positive = Annotated[float, Field(gt=0, le=10_000_000)]
 Nonnegative = Annotated[float, Field(ge=0, le=10_000_000)]
 
+_APP_DIR = Path(__file__).resolve().parent
+_ENGINE_DIR = _APP_DIR / "engine"
+
+
+def _engine_source_files() -> list[Path]:
+    """Every source file whose bytes can change this report's numbers or grade.
+
+    The fingerprint has to pin the whole recipe, not a hand-picked slice. The
+    first version hashed three hardcoded engine filenames, which silently
+    omitted two modules that move the score: ``engine/volatility.py`` (the
+    IV-vs-HV term behind the volatility sub-score) and ``config.py`` (the
+    sub-score weights, the grade bands and the liquidity thresholds). With those
+    left out, two reports could carry the SAME ``engine_sha256`` while a
+    different recipe produced different letters -- the opposite of what a
+    reproducibility fingerprint is for. The engine package is globbed so a new
+    engine module is covered automatically, and the modules outside it that
+    decide a grade (the config, the quote model, and this report builder) are
+    listed explicitly.
+    """
+    files = sorted(_ENGINE_DIR.glob("*.py"))
+    files += [_APP_DIR / "config.py", _APP_DIR / "models.py", _APP_DIR / "scenarios.py"]
+    return files
+
 
 class ScenarioRequest(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
@@ -106,13 +129,14 @@ def simulate(req: ScenarioRequest) -> dict:
         "Scenario grading uses a quote midpoint when a valid bid/ask is supplied, otherwise the entered premium; the simulator always uses the entered purchase premium.",
         "A standard contract uses 100 shares; choose the actual multiplier for adjusted contracts. Rates and volatility are annual decimals; days are calendar days.",
         "The grader uses a half-day pricing floor for 0DTE. The scenario engine uses exact intrinsic payoff when remaining time is zero.",
+        "Provenance: inputs_sha256 fingerprints the normalized inputs; engine_sha256 fingerprints every module that can change the numbers or the grade - the pricing, volatility, scoring and grading engine, the weights and grade-band config, the quote model and this report builder.",
     ]
     inputs = req.model_dump(mode="json")
     inputs_hash = hashlib.sha256(_canonical(inputs)).hexdigest()
-    code = b"".join((Path(__file__).parent/"engine"/name).read_bytes() for name in ("blackscholes.py","scoring.py","grading.py"))
+    engine_bytes = b"".join(p.read_bytes() for p in _engine_source_files())
     return {
         "schema": "option-contract-grader.scenario", "version":1, "inputs":inputs,
-        "provenance":{"inputs_sha256":inputs_hash,"engine_sha256":hashlib.sha256(code).hexdigest()},
+        "provenance":{"inputs_sha256":inputs_hash,"engine_sha256":hashlib.sha256(engine_bytes).hexdigest()},
         "assumptions":assumptions,"grade":grade,"rows":rows,
         "summary":{"premium_paid_usd":paid,"round_trip_fees_usd":fees,"max_loss_usd":paid+fees,
                    "expiry_break_even":break_even if break_even>=0 else None,
