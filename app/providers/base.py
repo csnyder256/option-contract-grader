@@ -7,9 +7,11 @@ drop-in: implement the four methods, no engine changes.
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
-from datetime import date
-from typing import Dict, List
+from datetime import date, datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import Dict, List, Optional
 
 from app.models import Contract, OHLC, OptionType, Quote
 
@@ -25,6 +27,47 @@ class FeedError(Exception):
         self.symbol = symbol
         self.reason = reason
         super().__init__(f"{symbol}: {reason}" if reason else symbol)
+
+
+def parse_retry_after(
+    value: Optional[str], now: Optional[datetime] = None
+) -> Optional[float]:
+    """A ``Retry-After`` header as a non-negative, finite delay in seconds, or None.
+
+    RFC 9110 allows the header in two forms and both are legal in the wild:
+    delta-seconds (``"120"``) or an HTTP-date
+    (``"Wed, 21 Oct 2026 07:28:00 GMT"``). A value that parses as neither
+    returns None so the caller can use its own schedule, and a date already in
+    the past returns 0.0 (``"retry now"``) rather than None.
+
+    This is shared by both providers, because a response header is untrusted
+    input and must never be handed straight to ``time.sleep``: ``time.sleep``
+    raises ``ValueError`` on a negative or non-finite delay, so a single
+    ``Retry-After: -1`` (or ``NaN``) would otherwise kill a retry loop with an
+    untyped error instead of the typed ``FeedError`` the providers promise. A
+    non-finite value (``inf``/``nan``) is therefore rejected as unparseable, and
+    every returned delay is clamped to ``>= 0``.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        seconds = float(text)
+        return max(0.0, seconds) if math.isfinite(seconds) else None
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:  # an HTTP-date without a zone is UTC by convention
+        when = when.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    return max(0.0, (when - now).total_seconds())
 
 
 class OptionsDataProvider(ABC):
