@@ -11,7 +11,7 @@ produce a plausible-looking normal result instead of an error:
 The tests run offline; the provider cases drive a fake transport.
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -535,3 +535,84 @@ def test_market_request_accepts_the_documented_happy_path():
 
     req = MarketScanRequest(price_min=20, price_max=120, dte_from=14, dte_to=60, limit=50)
     assert req.dte_to == 60
+
+
+# --------------------------------------------------------------------------- #
+# A response header is untrusted input: it must not become the scan's result.
+#
+# CBOE's backoff handed the Retry-After header straight to ``time.sleep`` via
+# ``float()``. ``time.sleep`` raises ``ValueError`` on a negative or NaN delay,
+# so a retryable 429/503 carrying ``Retry-After: -1`` (or ``NaN``) escaped the
+# retry loop as an UNTYPED error: no retry, no backoff, and ``/scan`` answered
+# with ``502 "Scan failed: sleep length must be non-negative"`` -- an internal
+# exception presented as the outcome of a scan. The header is a legal but
+# untrusted response field; the board the retry would have produced must be
+# unaffected by it. Both providers now share one parser that accepts the two
+# legal forms (delta-seconds and HTTP-date) and rejects everything else.
+# --------------------------------------------------------------------------- #
+
+
+def _cboe_options_payload(symbol="AAPL", price=100.0, days_out=42):
+    """A minimal well-formed CBOE delayed-quote payload with one tradeable call."""
+    exp = date.today() + timedelta(days=days_out)
+    strike_code = f"{int(round(price * 1000)):08d}"
+    return {
+        "data": {
+            "symbol": symbol, "current_price": price, "close": price,
+            "options": [{
+                "option": f"{symbol}{exp.strftime('%y%m%d')}C{strike_code}",
+                "bid": 3.0, "ask": 3.2, "iv": 0.30, "open_interest": 1000,
+                "volume": 500, "delta": 0.5, "gamma": 0.01, "theta": -0.01,
+                "vega": 0.1, "rho": 0.01, "last_trade_price": 3.1,
+            }],
+        }
+    }
+
+
+def _yahoo_chart_payload(price=100.0, days=40):
+    """A minimal Yahoo chart payload: a price plus `days` of daily bars."""
+    start = date.today() - timedelta(days=days)
+    stamps = [
+        int(datetime.combine(start + timedelta(days=i), datetime.min.time(),
+                             tzinfo=timezone.utc).timestamp())
+        for i in range(days)
+    ]
+    closes = [price + (i % 3) for i in range(days)]
+    return {
+        "chart": {
+            "result": [{
+                "meta": {"regularMarketPrice": price},
+                "timestamp": stamps,
+                "indicators": {"quote": [{
+                    "open": closes,
+                    "high": [c + 1 for c in closes],
+                    "low": [c - 1 for c in closes],
+                    "close": closes,
+                }]},
+            }]
+        }
+    }
+
+
+def test_endpoint_survives_a_negative_retry_after_header(monkeypatch):
+    """A retryable 429 with ``Retry-After: -1`` must still yield a board, not a 502.
+
+    ``time.sleep`` is deliberately NOT stubbed here: the whole point is that the
+    header's value reaches it. ``Retry-After: -1`` clamps to a 0.0-second wait,
+    so the retry is instant, while the pre-fix code would pass the raw negative
+    value to the real ``time.sleep`` and die with an untyped ``ValueError``.
+    """
+    import app.providers.cboe as cboe_mod
+
+    provider = cboe_mod.CboeProvider()
+    provider._client = _SeqClient([
+        _Resp(429, headers={"Retry-After": "-1"}),   # legal-but-hostile header
+        _Resp(200, _cboe_options_payload()),         # the retry's real payload
+        _Resp(200, _yahoo_chart_payload()),          # history for realized vol
+    ])
+
+    r = _client_with_provider(monkeypatch, provider).post(
+        "/scan", json={"ticker": "AAPL", "side": "calls"}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["results"], "the retry produced a board; a bad header must not erase it"

@@ -29,7 +29,12 @@ import httpx
 
 from app.config import settings
 from app.models import Contract, OHLC, OptionType, Quote
-from app.providers.base import FeedError, OptionsDataProvider, filter_side
+from app.providers.base import (
+    FeedError,
+    OptionsDataProvider,
+    filter_side,
+    parse_retry_after,
+)
 
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) OptionsFinder/0.1"
 # Statuses worth retrying: rate limiting (429), Cloudflare bot-block (403), and
@@ -225,14 +230,23 @@ class CboeProvider(OptionsDataProvider):
         self._backoff_cap = settings.feed_backoff_cap
 
     def _sleep_backoff(self, attempt: int, retry_after: Optional[str]) -> None:
-        if retry_after:
-            try:
-                wait = float(retry_after)
-            except ValueError:
-                wait = self._backoff_base * (2 ** attempt)
-        else:
-            wait = self._backoff_base * (2 ** attempt)
-        wait = min(wait, self._backoff_cap)
+        """Wait before the next retry: a usable ``Retry-After``, else exponential.
+
+        A ``Retry-After`` header is untrusted input and is legal in two forms --
+        delta-seconds or an HTTP-date (RFC 9110). The shared
+        ``parse_retry_after`` accepts both and rejects anything else, including a
+        negative or non-finite value. That guard matters because
+        ``time.sleep`` raises ``ValueError`` on a negative or NaN delay, so a
+        single ``Retry-After: -1`` (or ``NaN``) used to escape this retry loop as
+        an untyped error -- no retry, no backoff, and not the typed ``FeedError``
+        the rest of this module promises. A header that does not parse falls back
+        to the exponential schedule, and every wait is clamped to
+        ``feed_backoff_cap`` so a response cannot park a worker thread for an
+        hour. The jitter stays: it de-synchronizes concurrent sweep workers.
+        """
+        parsed = parse_retry_after(retry_after)
+        wait = parsed if parsed is not None else self._backoff_base * (2 ** attempt)
+        wait = max(0.0, min(wait, self._backoff_cap))
         wait += random.uniform(0.0, 0.25 * wait)  # jitter: de-synchronize workers
         time.sleep(wait)
 

@@ -22,17 +22,20 @@ quotes, history) and https://docs.tradier.com/docs/rate-limiting
 from __future__ import annotations
 
 import time
-import math
 from collections import deque
-from datetime import date, datetime, timezone
-from email.utils import parsedate_to_datetime
+from datetime import date, datetime
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 
 from app.config import settings
 from app.models import Contract, OHLC, OptionType, Quote
-from app.providers.base import FeedError, OptionsDataProvider, filter_side
+from app.providers.base import (
+    FeedError,
+    OptionsDataProvider,
+    filter_side,
+    parse_retry_after,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -70,37 +73,10 @@ def _parse_date(value: str) -> date:
     return datetime.strptime(value, "%Y-%m-%d").date()
 
 
-def parse_retry_after(value: Optional[str], now: Optional[datetime] = None) -> Optional[float]:
-    """A ``Retry-After`` header as a non-negative delay in seconds, or None.
-
-    RFC 9110 allows the header in two forms and both are legal in the wild:
-    delta-seconds (``"120"``) or an HTTP-date
-    (``"Wed, 21 Oct 2026 07:28:00 GMT"``). Only the first used to be handled -
-    the date form reached ``float()``, raised ``ValueError``, and killed the
-    caller's retry loop instead of backing off. A value that parses as neither
-    returns None so the caller can use its own schedule, and a date already in
-    the past returns 0.0 (``"retry now"``) rather than None.
-    """
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    try:
-        seconds = float(text)
-        return max(0.0, seconds) if math.isfinite(seconds) else None
-    except ValueError:
-        pass
-    try:
-        when = parsedate_to_datetime(text)
-    except (TypeError, ValueError):
-        return None
-    if when is None:
-        return None
-    if when.tzinfo is None:  # an HTTP-date without a zone is UTC by convention
-        when = when.replace(tzinfo=timezone.utc)
-    now = now or datetime.now(timezone.utc)
-    return max(0.0, (when - now).total_seconds())
+# ``parse_retry_after`` now lives in ``app.providers.base`` so both providers
+# share one defensive parser of the (untrusted) Retry-After header. It is
+# re-imported above, so ``app.providers.tradier.parse_retry_after`` still
+# resolves for callers and tests that reference it here.
 
 
 def _symbol_hint(params: Optional[Dict[str, Any]]) -> str:
