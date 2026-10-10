@@ -252,3 +252,68 @@ def test_future_or_unzoned_cache_timestamp_cannot_claim_freshness(timestamp):
     store = Store(":memory:")
     store.save_underlying("AAPL", 100, 0.2, observed_at=timestamp)
     assert store.get_underlying_fresh("AAPL", 24) is None
+
+
+def test_daily_atm_iv_snapshot_does_not_depend_on_the_requested_side():
+    """A calls-only and a puts-only scan of one symbol must record one day-IV.
+
+    The snapshot is shared per symbol per day and first-write-wins, so if its
+    value came from the requested side the series would be a mix of call-side
+    and put-side IVs (the skew), and IV Rank would measure the skew instead of
+    the symbol's own IV history. Measured on live AAPL (2026-10-10): the
+    calls-only ATM IV was 0.2455 and the puts-only ATM IV 0.2219 -- a 2.4
+    vol-point gap from the same chain.
+    """
+    from app.engine.blackscholes import bs_price
+    from app.providers.base import filter_side
+    from app.scanner import ScanFilters, scan_symbol
+
+    S, K, T, r, q = 100.0, 100.0, 30.0 / 365.0, 0.04, 0.0
+    call_iv, put_iv = 0.40, 0.15
+
+    class SkewedProvider(OptionsDataProvider):
+        """ATM call IV 40%, ATM put IV 15% -- one symbol, one visible skew."""
+
+        supports_batch_quotes = False
+
+        def get_quote(self, symbol):
+            return Quote(symbol=symbol.upper(), last=S)
+
+        def get_expirations(self, symbol):
+            return [date.today() + timedelta(days=30)]
+
+        def get_history(self, symbol, days=60):
+            return []
+
+        def get_chain(self, symbol, expiration, side="both"):
+            out = []
+            for ot, iv in ((OptionType.CALL, call_iv), (OptionType.PUT, put_iv)):
+                if not filter_side(ot, side):
+                    continue
+                mid = bs_price(S, K, r, q, iv, T, ot)
+                out.append(Contract(
+                    underlying=symbol.upper(), occ_symbol=f"{symbol}{ot.value}",
+                    option_type=ot, strike=K, expiration=expiration, dte=30,
+                    bid=mid - 0.02, ask=mid + 0.02, last=mid, volume=500,
+                    open_interest=1000, provider_iv=iv))
+            return out
+
+    provider = SkewedProvider()
+
+    def run(side):
+        store = Store(":memory:")            # a fresh day; first write wins
+        res = scan_symbol("SKEW", provider, store, S, q, None, ScanFilters(side=side))
+        return store.get_iv_history("SKEW"), res
+
+    calls_hist, calls_res = run("calls")
+    puts_hist, puts_res = run("puts")
+    both_hist, _ = run("both")
+
+    # The board is still narrowed to the requested side...
+    assert {sc.contract.option_type for sc in calls_res.scored} == {OptionType.CALL}
+    assert {sc.contract.option_type for sc in puts_res.scored} == {OptionType.PUT}
+    # ...but the shared day-IV is one observation, not a property of the side.
+    assert calls_hist == puts_hist == both_hist, (calls_hist, puts_hist, both_hist)
+    assert len(calls_hist) == 1
+    # And it is still the nearest-expiry, nearest-strike ATM solve.
+    assert calls_hist[0] == pytest.approx(call_iv, abs=1e-3)
