@@ -16,6 +16,7 @@ from app.engine import blackscholes as bs
 from app.engine.scoring import score_contract
 from app.engine.volatility import iv_rank
 from app.models import Contract, ScoredContract
+from app.providers.base import filter_side, normalize_side
 
 
 @dataclass
@@ -71,6 +72,39 @@ def select_expirations(all_exps, exp_from, exp_to, today, settings):
     return pool[:hard_cap], len(pool), len(pool) > hard_cap
 
 
+def _strike_window(
+    contracts: List[Contract], underlying: float, settings: Settings
+) -> List[Contract]:
+    """Keep only the k strikes nearest the money (0 = no cap).
+
+    The biggest per-name speed lever for large market sweeps. Applied to
+    whatever list it is given, so a side-filtered board and the unfiltered
+    chain each prune against their own strikes.
+    """
+    k = settings.atm_strike_window
+    if not k or k <= 0 or not contracts:
+        return contracts
+    strikes = sorted({c.strike for c in contracts})
+    atm_idx = min(range(len(strikes)), key=lambda i: abs(strikes[i] - underlying))
+    lo, hi = max(0, atm_idx - k), min(len(strikes), atm_idx + k + 1)
+    allowed = set(strikes[lo:hi])
+    return [c for c in contracts if c.strike in allowed]
+
+
+def _solve_atm_iv(
+    contracts: List[Contract], S: float, r: float, q: float
+) -> Optional[float]:
+    """The nearest-expiration, nearest-strike solvable IV: the symbol's ATM IV."""
+    for c in sorted(contracts, key=lambda c: (c.dte, abs(c.strike - S))):
+        if c.mid <= 0:
+            continue
+        Tf = max(c.dte, 1) / 365.0
+        solved = bs.implied_vol(c.mid, S, c.strike, r, q, Tf, c.option_type)
+        if solved:
+            return solved
+    return None
+
+
 def scan_symbol(
     symbol: str, provider, store, S: float, q: float, hv: Optional[float],
     filters: ScanFilters, today: Optional[date] = None, settings: Optional[Settings] = None,
@@ -84,35 +118,35 @@ def scan_symbol(
     today = today or date.today()
     r = settings.risk_free_rate
 
+    # Normalize the side up front: a typo raises before any state change (and
+    # before a snapshot is recorded), rather than widening silently to both.
+    side = normalize_side(filters.side)
+
     all_exps = provider.get_expirations(symbol)
     exps, total_matching, truncated = select_expirations(
         all_exps, filters.expiration_from, filters.expiration_to, today, settings
     )
 
-    contracts: List[Contract] = []
+    # Fetch BOTH sides in one pass per expiration, then narrow for the board.
+    # Both providers apply `side` client-side inside their chain parsers (they
+    # always walk the whole payload), so asking for both costs the same request
+    # and parse work as asking for one -- and it lets the ATM-IV observation
+    # below be a property of the symbol instead of a property of this request.
+    chain: List[Contract] = []
     for e in exps:
-        contracts.extend(provider.get_chain(symbol, e, side=filters.side))
+        chain.extend(provider.get_chain(symbol, e, side="both"))
 
-    # Optional: keep only the k strikes nearest the money (per the config knob).
-    # The biggest per-name speed lever for large market sweeps; 0 = no cap.
-    k = settings.atm_strike_window
-    if k and k > 0 and contracts:
-        strikes = sorted({c.strike for c in contracts})
-        atm_idx = min(range(len(strikes)), key=lambda i: abs(strikes[i] - S))
-        lo, hi = max(0, atm_idx - k), min(len(strikes), atm_idx + k + 1)
-        allowed = set(strikes[lo:hi])
-        contracts = [c for c in contracts if c.strike in allowed]
+    contracts = _strike_window(
+        [c for c in chain if filter_side(c.option_type, side)], S, settings
+    )
 
     # ATM IV (nearest-expiration, nearest-strike solvable) -> snapshot -> rank.
-    atm_iv = None
-    for c in sorted(contracts, key=lambda c: (c.dte, abs(c.strike - S))):
-        if c.mid <= 0:
-            continue
-        Tf = max(c.dte, 1) / 365.0
-        solved = bs.implied_vol(c.mid, S, c.strike, r, q, Tf, c.option_type)
-        if solved:
-            atm_iv = solved
-            break
+    # Solved from the UNFILTERED chain: the snapshot is shared per symbol per
+    # day and first-write-wins, so a calls-only and a puts-only scan of the same
+    # symbol must record the SAME day-IV. Solving from the requested side made
+    # the series a mix of call-side and put-side IVs, so IV Rank measured the
+    # skew rather than the symbol's own IV history.
+    atm_iv = _solve_atm_iv(_strike_window(chain, S, settings), S, r, q)
     if atm_iv:
         store.save_iv_snapshot(symbol, atm_iv)
     rank_value = iv_rank(atm_iv, store.get_iv_history(symbol))
