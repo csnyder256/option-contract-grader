@@ -218,6 +218,38 @@ def test_sweep_reports_a_failed_batch_quote_pass(monkeypatch):
     assert any("its 4 name(s)" in n for n in notes)           # and how much it cost
 
 
+def test_sweep_counts_a_name_whose_chart_came_back_empty(monkeypatch):
+    """A 200 with no price is an unpriced name, not a name that never existed.
+
+    The Yahoo price path returns ``(0.0, [])`` for an empty chart without
+    raising, and the loop used to append to ``price_failed`` only when the fetch
+    had raised. So the name was neither priced nor counted: the notes printed
+    ``priced 2/3`` with no mention of the third name, and ``priced +
+    price_failed`` fell short of the attempted count. The batched-quote path
+    already counts a name it got no quote for; this pins the Yahoo path to the
+    same rule, so the documented "nothing fails silently" invariant holds for
+    both price paths.
+    """
+    class EmptyChartProvider(FakeProvider):
+        def get_price_and_history(self, symbol, days=60):
+            if symbol == "CCC":
+                return 0.0, []          # HTTP 200, empty chart: no price, no bars
+            return super().get_price_and_history(symbol, days)
+
+    prices = {"AAA": 50.0, "BBB": 60.0, "CCC": 70.0}
+    monkeypatch.setattr(market, "_universe_cache", list(prices.keys()))
+
+    top, notes = market.run_market_sweep(
+        {"side": "both", "limit": 50}, EmptyChartProvider(prices),
+        Store(":memory:"), lambda *a: None,
+    )
+
+    assert "CCC" not in {r["underlying"] for r in top}   # no price -> not scored
+    assert any("priced 2/3" in n for n in notes)         # the other two were priced
+    assert any("1 unpriced" in n for n in notes)         # and the empty chart is counted
+    assert any("CCC" in n for n in notes)                # and named, not dropped
+
+
 def test_background_sweep_completes(monkeypatch):
     prices = {"AAA": 30.0, "BBB": 75.0}
     monkeypatch.setattr(market, "_universe_cache", list(prices.keys()))
