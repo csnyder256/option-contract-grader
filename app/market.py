@@ -243,18 +243,26 @@ def run_market_sweep(params: dict, provider, store, progress_cb,
             try:
                 price, bars = provider.get_price_and_history(sym, days=hv_days)
             except Exception:
-                return sym, 0.0, None, True
+                return sym, 0.0, None
             hv = hv_from_bars(bars, settings.hv_window) if bars else None
             if price and price > 0:
                 store.save_underlying(sym, price, hv, today)
-            return sym, price, hv, False
+            return sym, price, hv
 
         with ThreadPoolExecutor(max_workers=workers) as ex:
             for fut in as_completed([ex.submit(fetch_ph, s) for s in uncached]):
-                sym, price, hv, failed = fut.result()
+                sym, price, hv = fut.result()
                 if price and price > 0:
                     priced[sym] = (price, hv)
-                elif failed:
+                else:
+                    # A name with no usable price is unpriced whether the fetch
+                    # raised or came back with an empty chart (HTTP 200, no
+                    # price, no bars). Counting only the raised case let an
+                    # empty chart vanish from the failure list entirely: the
+                    # name was neither priced nor counted, so ``priced +
+                    # price_failed`` fell short of the attempted count the
+                    # notes print. The batched-quote path below already counts
+                    # a name it got no quote for; this path now agrees with it.
                     price_failed.append(sym)
                 done += 1
                 progress_cb("prices", done, len(candidates))
