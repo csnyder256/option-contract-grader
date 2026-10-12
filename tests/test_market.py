@@ -235,3 +235,55 @@ def test_background_sweep_completes(monkeypatch):
             break
     assert state["status"] == "done"
     assert state["results"]
+
+
+def test_sweep_names_names_whose_dte_window_matched_nothing(monkeypatch):
+    """A DTE filter matching no expiration must not read as an empty market.
+
+    `select_expirations` returns [] for a name whose listed expirations all fall
+    outside the requested window, so no chain is fetched for it: the name yields
+    no contracts *and* no failure. It was simply absent from the board, and the
+    notes said only how many names were scanned -- never that the DTE window was
+    the reason the sweep came back empty. (Measured live: DTE 900-1000 over
+    AAPL/MSFT/SPY returned an empty board and no mention of the filter.)
+    """
+    prices = {"AAA": 50.0, "BBB": 60.0}
+    monkeypatch.setattr(market, "_universe_cache", list(prices.keys()))
+
+    top, notes = market.run_market_sweep(
+        {"side": "both", "limit": 50, "dte_from": 900, "dte_to": 1000},
+        FakeProvider(prices), Store(":memory:"), lambda *a: None,
+    )
+
+    assert top == []                                  # nothing matched
+    assert any("900-1000" in n for n in notes)        # the window is named
+    assert any("AAA" in n and "BBB" in n for n in notes)   # with examples
+
+
+def test_sweep_names_names_that_list_no_expiration_at_all(monkeypatch):
+    """With no DTE filter, a name that lists no expiration is named too."""
+    prices = {"AAA": 50.0}
+    monkeypatch.setattr(market, "_universe_cache", list(prices.keys()))
+
+    class NoExpirations(FakeProvider):
+        def get_expirations(self, symbol):
+            return []
+
+    _, notes = market.run_market_sweep(
+        {"side": "both", "limit": 50}, NoExpirations(prices),
+        Store(":memory:"), lambda *a: None,
+    )
+    assert any("listed no expiration at all" in n and "AAA" in n for n in notes)
+
+
+def test_sweep_does_not_claim_an_empty_window_when_it_scored_names(monkeypatch):
+    """The new note is emitted only when a name really had nothing to score."""
+    prices = {"AAA": 50.0, "BBB": 60.0}
+    monkeypatch.setattr(market, "_universe_cache", list(prices.keys()))
+
+    top, notes = market.run_market_sweep(
+        {"side": "both", "limit": 50}, FakeProvider(prices),
+        Store(":memory:"), lambda *a: None,
+    )
+    assert top                                            # the sweep scored something
+    assert not any("listed no expiration" in n for n in notes)
