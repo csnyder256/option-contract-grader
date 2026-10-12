@@ -108,6 +108,26 @@ def _delayed_note() -> Optional[str]:
     return None
 
 
+def _nothing_scanned_note(req: "ScanRequest") -> str:
+    """Why a scan selected no expiration, and therefore scored nothing.
+
+    `select_expirations` returns an empty list when an explicit date range
+    matches none of the symbol's listed expirations, and when the symbol lists
+    no future expiration at all. Either way no chain is fetched and the board
+    comes back empty, which on its own reads exactly like "this ticker has
+    nothing worth buying" -- the failure mode this repo keeps closing. The note
+    names the cause instead.
+    """
+    if req.expiration_from is not None or req.expiration_to is not None:
+        lo = req.expiration_from.isoformat() if req.expiration_from else "any"
+        hi = req.expiration_to.isoformat() if req.expiration_to else "any"
+        return (
+            f"No listed expiration fell in the requested date range ({lo} to {hi}); "
+            f"nothing was scanned. Widen or clear the range."
+        )
+    return "This symbol listed no future expiration; nothing was scanned."
+
+
 # --------------------------------------------------------------------------- #
 # Single-ticker scan.
 # --------------------------------------------------------------------------- #
@@ -184,7 +204,13 @@ def run_scan(req: ScanRequest, provider: OptionsDataProvider, store: Store) -> d
     dn = _delayed_note()
     if dn:
         notes.append(dn)
-    if req.expiration_from is None and req.expiration_to is None:
+    if not res.exps:
+        # No expiration was selected, so no chain was fetched and nothing was
+        # scored. Say that instead of returning a bare empty board. The
+        # default-window note is skipped in this branch: it would claim a window
+        # was applied and expirations were scanned when neither happened.
+        notes.append(_nothing_scanned_note(req))
+    elif req.expiration_from is None and req.expiration_to is None:
         notes.append(
             f"No date range given - defaulted to expirations {settings.default_min_dte}-"
             f"{settings.default_max_dte} DTE (the buyer sweet spot). Set a range to override."

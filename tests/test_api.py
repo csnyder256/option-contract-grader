@@ -142,6 +142,53 @@ def test_scan_notes_flag_default_dte_window(client):
     assert any("defaulted to expirations" in n for n in notes)
 
 
+def test_scan_names_the_date_range_that_matched_no_expiration(monkeypatch):
+    """An explicit range matching no listed expiration must say so.
+
+    `select_expirations` returns [] when the requested range matches none of the
+    symbol's expirations, so no chain is fetched and the board is empty. Before
+    this the notes only mentioned IV rank warming up, which is the same shape as
+    "this ticker has nothing worth buying" -- the failure mode this repo keeps
+    closing. The cause is the request's own date filter.
+    """
+    class Only30Dte(FakeProvider):
+        def get_expirations(self, symbol):
+            return [date.today() + timedelta(days=30)]
+
+    monkeypatch.setattr(api, "_provider", Only30Dte())
+    monkeypatch.setattr(api, "_store", Store(":memory:"))
+    far = (date.today() + timedelta(days=800)).isoformat()
+    r = TestClient(app).post(
+        "/scan", json={"ticker": "AAPL", "expiration_from": far, "expiration_to": far}
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["results"] == []
+    assert body["meta"]["scanned_expirations"] == []
+    notes = body["meta"]["notes"]
+    assert any("requested date range" in n and far in n for n in notes)
+    # ...and it must not also claim a default window was applied and scanned.
+    assert not any("defaulted to expirations" in n for n in notes)
+
+
+def test_scan_names_a_symbol_that_lists_no_expiration(monkeypatch):
+    """A symbol with no listed expiration is named, not answered with a blank board."""
+
+    class NoExpirations(FakeProvider):
+        def get_expirations(self, symbol):
+            return []
+
+    monkeypatch.setattr(api, "_provider", NoExpirations())
+    monkeypatch.setattr(api, "_store", Store(":memory:"))
+    r = TestClient(app).post("/scan", json={"ticker": "AAPL"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["results"] == []
+    notes = body["meta"]["notes"]
+    assert any("no future expiration" in n for n in notes)
+    assert not any("defaulted to expirations" in n for n in notes)
+
+
 # --- /market/scan + /market/status ----------------------------------------- #
 
 def test_market_scan_starts_and_status_polls(monkeypatch, client):

@@ -317,6 +317,7 @@ def run_market_sweep(params: dict, provider, store, progress_cb,
     )
     all_scored = []
     chain_failed: List[str] = []
+    no_expiration: List[str] = []
     done = 0
     progress_cb("chains", 0, len(in_band))
 
@@ -328,16 +329,21 @@ def run_market_sweep(params: dict, provider, store, progress_cb,
                 sym, chain_provider, store, price, settings.default_dividend_yield,
                 hv, filters, today=today,
             )
-            return sym, res.scored[: settings.per_symbol_cap], False
+            # `not res.exps` means expiration selection came up empty, so no
+            # chain was fetched for this name at all -- a different thing from a
+            # name whose contracts were all filtered out.
+            return sym, res.scored[: settings.per_symbol_cap], False, not res.exps
         except Exception:
-            return sym, [], True
+            return sym, [], True, False
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
         for fut in as_completed([ex.submit(score_one, s) for s in in_band]):
-            sym, scored, failed = fut.result()
+            sym, scored, failed, no_exps = fut.result()
             all_scored.extend(scored)
             if failed:
                 chain_failed.append(sym)
+            elif no_exps:
+                no_expiration.append(sym)
             done += 1
             progress_cb("chains", done, len(in_band))
 
@@ -378,6 +384,25 @@ def run_market_sweep(params: dict, provider, store, progress_cb,
         + (f"; {len(chain_failed)} failed to fetch" if chain_failed else "")
         + "."
     )
+    if no_expiration:
+        # A name whose expiration selection came up empty never had a chain
+        # fetched, so it produced no contracts and no failure -- it would just be
+        # absent from the board. Naming it (and the DTE window that caused it)
+        # is what keeps a filter that matches nothing from reading as an empty
+        # market.
+        dte_lo = params.get("dte_from")
+        dte_hi = params.get("dte_to")
+        scope = (
+            f"in the requested DTE window "
+            f"({dte_lo if dte_lo is not None else 'any'}-"
+            f"{dte_hi if dte_hi is not None else 'any'})"
+            if (dte_lo is not None or dte_hi is not None)
+            else "at all"
+        )
+        notes.append(
+            f"{len(no_expiration)} name(s) listed no expiration {scope} "
+            f"(e.g. {', '.join(no_expiration[:6])}); nothing to score for them."
+        )
     if chain_mode.startswith("CBOE") and realtime_provider is not None and not has_price_filter:
         notes.append("Narrow the price/premium filters for real-time (Tradier) chains.")
     notes.append(
