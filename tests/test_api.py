@@ -199,3 +199,115 @@ def test_filter_side_raises_instead_of_widening():
         filter_side(OptionType.CALL, "callz")
     assert filter_side(OptionType.CALL, "calls") is True
     assert filter_side(OptionType.PUT, "calls") is False
+
+
+# --- /scan: a chain that WAS fetched but graded nothing -------------------- #
+#
+# An empty board reads exactly like "this ticker has nothing worth buying",
+# which is the failure mode this repo keeps closing. Three different causes
+# produce that identical shape, and the premium/price pre-filter is the one
+# that hides itself: a contract with no usable bid/ask/last is dropped before it
+# is ever scored, so the documented `No price (no bid/ask/last)` grade never
+# reaches the board and the user's own filters get the blame. The notes must
+# name the cause instead.
+
+
+class _UnpricedChainProvider(FakeProvider):
+    """A listed chain in which no contract carries a bid, ask, or last trade."""
+
+    def get_chain(self, symbol, expiration, side="both"):
+        out = []
+        for k in (95.0, 100.0, 105.0):
+            for ot in (OptionType.CALL, OptionType.PUT):
+                if not filter_side(ot, side):
+                    continue
+                out.append(Contract(
+                    underlying=symbol.upper(), occ_symbol=f"{symbol}{k}{ot.value}",
+                    option_type=ot, strike=k, expiration=expiration, dte=30,
+                    bid=0.0, ask=0.0, last=0.0, volume=0, open_interest=0))
+        return out
+
+
+class _EmptyChainProvider(FakeProvider):
+    """Expirations are listed; the feed returns no contracts for them."""
+
+    def get_chain(self, symbol, expiration, side="both"):
+        return []
+
+
+def _scan_with(monkeypatch, provider, payload):
+    monkeypatch.setattr(api, "_provider", provider)
+    monkeypatch.setattr(api, "_store", Store(":memory:"))
+    return TestClient(app).post("/scan", json=payload)
+
+
+def test_scan_names_a_chain_that_had_no_usable_price(monkeypatch):
+    """A quoted-nothing chain is named, not answered with a bare empty board.
+
+    Every contract in this chain has bid = ask = last = 0, so `premium_ok`
+    drops all six before scoring and the board is empty. Before this the notes
+    said only that IV rank was warming up, which is the same shape as "this
+    ticker has nothing worth buying" -- and the documented no-price grade never
+    appeared, because the pre-filter removes those contracts first.
+    """
+    r = _scan_with(monkeypatch, _UnpricedChainProvider(), {"ticker": "ILLQ"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["results"] == []
+    assert body["meta"]["scanned_expirations"]          # an expiration WAS scanned
+    notes = body["meta"]["notes"]
+    assert any("none had a usable price" in n for n in notes)
+    assert any("6 contract(s)" in n for n in notes)     # and how many were listed
+
+
+def test_scan_names_the_premium_band_that_excluded_every_priced_contract(monkeypatch):
+    """The user's own band is named as the cause when it really was the cause."""
+    r = _scan_with(
+        monkeypatch, FakeProvider(bad={"NOPE"}),
+        {"ticker": "AAPL", "premium_min": 40.0, "premium_max": 60.0},
+    )
+    body = r.json()
+    assert body["results"] == []
+    notes = body["meta"]["notes"]
+    assert any("fell outside the requested premium band" in n for n in notes)
+    assert any("$40-$60 per share" in n for n in notes)
+    # ...and the cause is not misattributed to a missing quote.
+    assert not any("none had a usable price" in n for n in notes)
+
+
+def test_scan_names_a_chain_that_listed_no_contracts(monkeypatch):
+    """An expiration that yields no contracts at all says so."""
+    body = _scan_with(monkeypatch, _EmptyChainProvider(), {"ticker": "ZZZZ"}).json()
+    assert body["results"] == []
+    notes = body["meta"]["notes"]
+    assert any("the feed listed no contracts for them" in n for n in notes)
+    assert not any("none had a usable price" in n for n in notes)
+
+
+def test_scan_does_not_claim_a_volatility_fallback_when_nothing_was_graded(monkeypatch):
+    """The rank note explains a sub-score fallback, so it needs a sub-score.
+
+    With an empty board there is no Volatility sub-score for the note to
+    describe; claiming "Using IV-vs-HV for volatility value in the meantime"
+    next to the real cause is a second wrong answer stacked on the first.
+    """
+    body = _scan_with(monkeypatch, _UnpricedChainProvider(), {"ticker": "ILLQ"}).json()
+    assert body["meta"]["iv_rank"] is None
+    assert not any("warming up" in n for n in body["meta"]["notes"])
+
+
+def test_scan_keeps_the_rank_note_when_a_board_exists(monkeypatch):
+    """...and the note still fires when there IS a graded board to explain."""
+    body = _scan_with(monkeypatch, FakeProvider(bad={"NOPE"}), {"ticker": "AAPL"}).json()
+    assert body["results"]
+    assert body["meta"]["iv_rank"] is None            # one day of history
+    assert any("warming up" in n for n in body["meta"]["notes"])
+
+
+def test_scan_adds_no_empty_board_note_when_it_graded_something(monkeypatch):
+    """The negative case: a normal scan must not claim its board was empty."""
+    body = _scan_with(monkeypatch, FakeProvider(bad={"NOPE"}), {"ticker": "AAPL"}).json()
+    assert body["results"]
+    notes = body["meta"]["notes"]
+    assert not any("nothing to grade" in n for n in notes)
+    assert not any("usable price" in n for n in notes)

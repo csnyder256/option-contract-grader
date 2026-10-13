@@ -36,6 +36,16 @@ class SymbolScan:
     total_matching_exps: int
     truncated: bool
     snap_count: int
+    # Diagnostics for an empty board. A caller that selected expirations and got
+    # an empty `scored` list cannot otherwise tell "the feed listed nothing" from
+    # "the feed listed contracts and not one had a usable price" from "the
+    # caller's own premium band removed all of them" -- three different causes
+    # that produce the same empty result. `contracts_listed` counts the contracts
+    # the provider returned for the scanned expirations (on the requested side,
+    # after the ATM strike-window prune); `contracts_priced` counts how many of
+    # those carried a usable price (`mid > 0`) at all.
+    contracts_listed: int = 0
+    contracts_priced: int = 0
 
 
 def premium_ok(c: Contract, premium_min: Optional[float], premium_max: Optional[float]) -> bool:
@@ -119,8 +129,13 @@ def scan_symbol(
     snap_count = store.snapshot_count(symbol)
 
     # Pre-filter cheaply (premium) BEFORE the IV solve inside score_contract.
+    # `priced` is split out from `candidates` so the caller can still tell a
+    # contract with no quote at all (dropped by premium_ok's `m <= 0` guard)
+    # apart from one the premium band excluded. Both are dropped here, so both
+    # leave the board empty; only the counts can say which happened.
+    priced = [c for c in contracts if c.mid > 0]
     candidates = [
-        c for c in contracts if premium_ok(c, filters.premium_min, filters.premium_max)
+        c for c in priced if premium_ok(c, filters.premium_min, filters.premium_max)
     ]
     scored = [score_contract(c, S, r, q, hv, rank_value, settings) for c in candidates]
     scored.sort(key=lambda sc: sc.overall_score, reverse=True)
@@ -128,4 +143,5 @@ def scan_symbol(
     return SymbolScan(
         scored=scored, atm_iv=atm_iv, rank_value=rank_value, exps=exps,
         total_matching_exps=total_matching, truncated=truncated, snap_count=snap_count,
+        contracts_listed=len(contracts), contracts_priced=len(priced),
     )

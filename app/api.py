@@ -29,7 +29,7 @@ from app.engine.volatility import hv_from_bars
 from app.providers.base import FeedError, OptionsDataProvider, normalize_side
 from app.providers.cboe import CboeProvider
 from app.providers.tradier import TradierProvider
-from app.scanner import ScanFilters, scan_symbol
+from app.scanner import ScanFilters, SymbolScan, scan_symbol
 from app.store import Store
 
 SIDE_DESCRIPTION = '"calls", "puts", or "both"'
@@ -106,6 +106,45 @@ def _delayed_note() -> Optional[str]:
     if settings.is_sandbox:
         return "Sandbox environment: option data is ~15 minutes delayed."
     return None
+
+
+def _premium_band_span(req: "ScanRequest") -> str:
+    """The requested premium band as a short phrase for the notes."""
+    lo, hi = req.premium_min, req.premium_max
+    if lo is not None and hi is not None:
+        return f"${lo:g}-${hi:g} per share"
+    if lo is not None:
+        return f"at or above ${lo:g} per share"
+    return f"at or below ${hi:g} per share"
+
+
+def _empty_board_note(res: SymbolScan, req: "ScanRequest") -> str:
+    """Why a scan that DID select expirations and DID fetch a chain graded nothing.
+
+    An empty board on its own reads exactly like "this ticker has nothing worth
+    buying", which is the failure mode this repo keeps closing. Three different
+    causes produce that identical shape, and the premium/price pre-filter is the
+    one that hides itself: a contract with no usable bid/ask/last is dropped
+    before it is ever scored, so the documented ``No price (no bid/ask/last)``
+    grade never reaches the board and the user's own filters get the blame for a
+    chain that simply had no quotes in it. Name the cause instead.
+    """
+    if res.contracts_listed == 0:
+        return (
+            f"{len(res.exps)} expiration(s) were scanned but the feed listed no "
+            f"contracts for them; nothing to grade."
+        )
+    if res.contracts_priced == 0:
+        return (
+            f"{res.contracts_listed} contract(s) were listed for the scanned "
+            f"expirations but none had a usable price (no bid/ask/last); nothing "
+            f"to grade."
+        )
+    return (
+        f"All {res.contracts_priced} contract(s) with a usable price fell outside "
+        f"the requested premium band ({_premium_band_span(req)}); nothing to grade. "
+        f"Widen or clear the band."
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -194,7 +233,15 @@ def run_scan(req: ScanRequest, provider: OptionsDataProvider, store: Store) -> d
             f"Scanned the nearest of {res.total_matching_exps} matching expirations; "
             f"narrow the date range to cover others."
         )
-    if res.rank_value is None:
+    if res.exps and not res.scored:
+        # Expirations were selected and chains were fetched, yet nothing was
+        # graded. Say which of the three causes it was instead of returning a
+        # bare empty board (see _empty_board_note).
+        notes.append(_empty_board_note(res, req))
+    if res.rank_value is None and res.scored:
+        # Only worth saying when a board exists: the note explains which fallback
+        # the Volatility sub-score used, and with nothing graded there is no
+        # sub-score to explain.
         notes.append(
             f"IV Rank is warming up ({res.snap_count} day(s) of history; needs ~10). "
             f"Using IV-vs-HV for volatility value in the meantime."
