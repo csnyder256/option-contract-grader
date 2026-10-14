@@ -7,10 +7,31 @@ request/response models and converts at the boundary.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, asdict
 from datetime import date
 from enum import Enum
 from typing import List, Optional, Dict, Any
+
+
+def _is_price(value: Any) -> bool:
+    """True for a real, finite, positive number -- something that can be a price.
+
+    ``NaN`` and the infinities are not prices, and they are not harmless here.
+    Every guard in this module is a comparison, and every comparison against
+    ``NaN`` is False, so a ``NaN`` bid slips through as if it were a quote:
+    ``ask >= bid`` reads True, the mid becomes ``NaN``, and the bid/ask spread
+    the hard liquidity gate exists to police becomes ``NaN`` too -- a value that
+    gate cannot trip on, because ``NaN > MAX_SPREAD_PCT`` is also False. ``inf``
+    is worse: an ``inf``/``inf`` quote looks two-sided, has a mid of ``inf``,
+    and reports a cost per contract of ``inf``.
+
+    Nothing that is not a finite positive number is a quote.
+    """
+    try:
+        return math.isfinite(value) and value > 0
+    except TypeError:  # None, a string, anything not number-like
+        return False
 
 
 class OptionType(str, Enum):
@@ -66,10 +87,10 @@ class Contract:
 
     @property
     def mid(self) -> float:
-        if self.bid > 0 and self.ask > 0 and self.ask >= self.bid:
+        if _is_price(self.bid) and _is_price(self.ask) and self.ask >= self.bid:
             return (self.bid + self.ask) / 2.0
         # Fall back to last trade if we don't have a clean two-sided market.
-        return self.last if self.last and self.last > 0 else 0.0
+        return self.last if _is_price(self.last) else 0.0
 
     @property
     def has_two_sided_market(self) -> bool:
@@ -82,8 +103,14 @@ class Contract:
         was missing was regression coverage, which
         ``tests/test_failures_surface.py`` now pins alongside the one-sided and
         locked cases.
+
+        A *non-finite* bid or ask is also not a market. ``NaN`` and ``inf`` are
+        not prices (see ``_is_price``): ``ask >= bid`` reads True for them, so
+        the crossed-book guard would wave them straight through and this
+        property would report a quotable two-sided market where there is no
+        quote at all.
         """
-        return self.bid > 0 and self.ask > 0 and self.ask >= self.bid
+        return _is_price(self.bid) and _is_price(self.ask) and self.ask >= self.bid
 
     @property
     def spread(self) -> float:

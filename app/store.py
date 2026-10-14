@@ -33,6 +33,20 @@ from datetime import date, datetime, timezone
 from typing import List, Optional, Tuple
 
 
+def _finite(value) -> bool:
+    """True for a real, finite number. ``NaN`` and the infinities are not one.
+
+    Comparisons against ``NaN`` are all False, so a non-finite value survives a
+    guard written as a comparison. The store is the boundary where an
+    observation either enters the history/cache or does not, so it is the right
+    place to say no.
+    """
+    try:
+        return math.isfinite(value)
+    except TypeError:  # None, a string, anything not number-like
+        return False
+
+
 class Store:
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -91,7 +105,7 @@ class Store:
         the day was already present.
 
         """
-        if atm_iv is None or not math.isfinite(atm_iv) or atm_iv <= 0:
+        if atm_iv is None or not _finite(atm_iv) or atm_iv <= 0:
             return False
         d = (snap_date or date.today()).isoformat()
         # ON CONFLICT DO NOTHING (not OR REPLACE): the daily series must be
@@ -146,9 +160,17 @@ class Store:
         price it already held keep the ORIGINAL observation time, so re-touching
         a name does not restamp it as freshly fetched. When omitted the row is
         stamped now, which is correct for a genuinely new fetch.
+
+        A non-finite price is refused outright, and a non-finite ``hv`` is
+        stored as "no HV" rather than dropped from the row. ``nan`` happens to
+        arrive as NULL in SQLite, but ``inf`` round-trips as ``inf`` -- and an
+        ``inf`` realized vol then feeds the grader a value no comparison-based
+        guard in the engine can reject.
         """
-        if price is None or not math.isfinite(price) or price <= 0:
+        if price is None or not _finite(price) or price <= 0:
             return
+        if hv is not None and not _finite(hv):
+            hv = None
         d = (snap_date or date.today()).isoformat()
         now = observed_at or datetime.now(timezone.utc).isoformat()
         with self._lock:

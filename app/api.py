@@ -11,6 +11,7 @@ Endpoints
 
 from __future__ import annotations
 
+import math
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -159,6 +160,14 @@ class ScanRequest(BaseModel):
         return self
 
 
+def _finite(value: object) -> bool:
+    """True for a real, finite number. ``NaN`` and the infinities are not one."""
+    try:
+        return math.isfinite(value)  # type: ignore[arg-type]
+    except TypeError:  # None, a string, anything not number-like
+        return False
+
+
 def run_scan(req: ScanRequest, provider: OptionsDataProvider, store: Store) -> dict:
     symbol = req.ticker.strip().upper()
     if not symbol:
@@ -166,9 +175,20 @@ def run_scan(req: ScanRequest, provider: OptionsDataProvider, store: Store) -> d
 
     quote = provider.get_quote(symbol)
     S = quote.last
-    if S <= 0:
+    if not (_finite(S) and S > 0):
+        # A non-finite price is not a price. The guard used to be `S <= 0`, and
+        # `NaN <= 0` / `inf <= 0` are both False, so a feed that emitted one
+        # passed it: the scan then reported a price of `inf`, an infinite
+        # cost-per-contract, and -- because Starlette encodes JSON with
+        # `allow_nan=False` -- died at response time as an unhandled HTTP 500
+        # instead of grading anything. Treat it exactly like a missing price.
         raise HTTPException(status_code=502, detail=f"No valid price for {symbol}")
     q = quote.dividend_yield or settings.default_dividend_yield
+    if not _finite(q):
+        # The field means "the yield the provider did not supply", so a
+        # non-finite one is not supplied: fall back to the configured default
+        # rather than propagate it into the model and the response body.
+        q = settings.default_dividend_yield
 
     history = provider.get_history(symbol, days=settings.hv_window + 5)
     hv = hv_from_bars(history, settings.hv_window)

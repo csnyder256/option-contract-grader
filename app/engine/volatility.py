@@ -10,7 +10,7 @@ when not enough history exists yet.
 from __future__ import annotations
 
 import math
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 from app.models import OHLC
 
@@ -23,11 +23,33 @@ TRADING_DAYS = 252
 IV_RANK_MIN_OBSERVATIONS = 10
 
 
+def _usable(value: Any) -> bool:
+    """True for a real, finite, positive number: a usable price observation.
+
+    A ``NaN`` or an infinity is not an observation. Both estimators below guard
+    their inputs with comparisons, and every comparison against ``NaN`` is
+    False -- ``NaN > 0``, ``NaN <= 0``, and ``min(..., NaN) <= 0`` all read
+    False -- so a non-finite bar used to slip through the guard that exists to
+    reject unusable ones. One such bar then poisons the whole estimate: the
+    Yang-Zhang variance goes ``NaN``, the ``yz_var <= 0`` fallback check is
+    False for ``NaN``, and the estimator returns ``NaN`` as an annualized
+    realized volatility. That number then flows into the grader and into the
+    API response body.
+
+    A non-finite value is unusable for exactly the reason a non-positive one is:
+    no real return can be computed from it.
+    """
+    try:
+        return math.isfinite(value) and value > 0
+    except TypeError:  # None, a string, anything not number-like
+        return False
+
+
 def log_returns(closes: Sequence[float]) -> List[float]:
     out: List[float] = []
     for i in range(1, len(closes)):
         prev, cur = closes[i - 1], closes[i]
-        if prev > 0 and cur > 0:
+        if _usable(prev) and _usable(cur):
             out.append(math.log(cur / prev))
     return out
 
@@ -74,7 +96,9 @@ def realized_vol_yang_zhang(
 
     for i in range(1, len(use)):
         prev, cur = use[i - 1], use[i]
-        if min(prev.close, cur.open, cur.high, cur.low, cur.close) <= 0:
+        # Skip a bar with no usable observation (non-positive or non-finite) in
+        # any of its four prices; it contributes no return.
+        if not all(_usable(v) for v in (prev.close, cur.open, cur.high, cur.low, cur.close)):
             continue
         o = math.log(cur.open / prev.close)
         c = math.log(cur.close / cur.open)
@@ -105,10 +129,21 @@ def realized_vol_yang_zhang(
 
 
 def hv_from_bars(bars: Sequence[OHLC], window: int) -> Optional[float]:
-    """Best-available realized vol: Yang-Zhang, falling back to close-to-close."""
+    """Best-available realized vol: Yang-Zhang, falling back to close-to-close.
+
+    Never returns a non-finite value. Both estimators skip non-finite bars, so
+    this is the backstop for an input that slips one through anyway: a realized
+    volatility of ``NaN`` is not an estimate, and handing it to the grader would
+    score the two volatility-driven dimensions at the top of the scale (the
+    clamp cannot reject ``NaN`` by comparison). ``None`` is the honest answer --
+    it is what a symbol with too little history returns, and it takes the same
+    documented "not enough data" fallback.
+    """
     hv = realized_vol_yang_zhang(bars, window)
     if hv is None:
         hv = realized_vol_close_to_close([b.close for b in bars], window)
+    if hv is None or not math.isfinite(hv):
+        return None
     return hv
 
 
