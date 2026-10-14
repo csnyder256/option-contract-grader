@@ -18,7 +18,7 @@ Sub-scores (each 0-100):
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.config import Settings, settings as default_settings
 from app.engine import blackscholes as bs
@@ -38,7 +38,28 @@ LABELS: Dict[str, str] = {
 }
 
 
+def _finite(value: Any) -> bool:
+    """True for a real, finite number. ``NaN`` and the infinities are not one.
+
+    Comparisons against ``NaN`` are all False, so a non-finite input passes
+    every ``if hv and iv`` / ``x > 0`` guard in this module as if it were data
+    and then scores at the top of the scale (see ``_clamp``).
+    """
+    try:
+        return math.isfinite(value)
+    except TypeError:  # None, a string, anything not number-like
+        return False
+
+
 def _clamp(x: float, lo: float = 0.0, hi: float = 100.0) -> float:
+    # A non-finite score is not a score. `min(100.0, nan)` returns 100.0 --
+    # every comparison against NaN is False, so the second argument is never
+    # "less than" the first and the clamp hands back the TOP of the scale. That
+    # turned a NaN realized vol into value=100/A and volatility=100/A on the two
+    # volatility-driven dimensions. Return the floor instead: an input the
+    # engine cannot use must never score better than one it can.
+    if not _finite(x):
+        return lo
     return max(lo, min(hi, x))
 
 
@@ -72,6 +93,16 @@ def score_contract(
     otype = contract.option_type
     mid = contract.mid
     flags: List[str] = []
+    # A non-finite context input is a MISSING input, not a perfect one. The
+    # guards below read `if hv and iv`, and NaN is truthy while comparing False
+    # to everything, so a NaN realized vol used to sail past them into
+    # `bs_price(...)` and `_clamp(...)`. Measured: hv=NaN scored value 100/A and
+    # volatility 100/A and lifted the overall grade from C (62.9) to B (77.4).
+    # Dropping it here sends the contract down the documented "not enough data
+    # to judge" fallback instead, and keeps the non-finite value out of
+    # `scenario_context`, which the frontend reads.
+    hv = hv if _finite(hv) else None
+    iv_rank = iv_rank if _finite(iv_rank) else None
     scenario_context = {"spot": S, "risk_free_rate": r, "dividend_yield": q, "historical_vol": hv, "iv_rank": iv_rank}
 
     # Effective time to expiry in years (floor avoids div-by-zero on 0DTE).
@@ -183,6 +214,12 @@ def score_contract(
 
     gated = (
         spread_pct is None
+        # A non-finite spread is not a tight one. `NaN > MAX_SPREAD_PCT` is
+        # False, so without this clause a NaN spread walked through the hard
+        # gate and the spread dimension -- 60% of the liquidity score -- scored
+        # a perfect 100 (see `_clamp`). The gate is a cap, so it must fire on a
+        # value it cannot measure.
+        or not _finite(spread_pct)
         or spread_pct > cfg.max_spread_pct
         or oi < cfg.min_open_interest
     )
