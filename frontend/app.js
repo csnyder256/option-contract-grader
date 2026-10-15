@@ -21,7 +21,11 @@ function renderCard(r) {
   const grade=["A","B","C","D","F"].includes(r.overall_grade)?r.overall_grade:"F";
   const card=node("div",null,"card"+((r.flags||[]).some(f=>f.toLowerCase().includes("illiquid"))?" illiquid":""));
   const badge=node("div",null,"badge grade-"+grade);
-  badge.append(node("span",grade,"letter"),node("span",String(Math.round(r.overall_score)),"num"));
+  // Floor, not round: the letter comes from the unrounded score, so a rounded
+  // number can round UP past the band boundary and contradict it (39.6 used to
+  // render as "F 40", 74.6 as "C 75"). floor(score) always lands inside the
+  // band that score's letter names, so the badge and the legend agree.
+  badge.append(node("span",grade,"letter"),node("span",String(Math.floor(r.overall_score)),"num"));
   const body=node("div",null,"body");
   body.append(node("div",r.underlying+" "+fmtMoney(r.strike)+" "+(r.type==="call"?"Call":"Put"),"title"));
   body.append(node("div","exp "+r.expiration+" · "+r.dte+" DTE · "+fmtMoney(r.premium_per_share)+"/sh · "+fmtMoney(r.cost_per_contract)+"/contract · break-even "+fmtMoney(r.break_even),"sub"));
@@ -30,7 +34,7 @@ function renderCard(r) {
   const chips=node("div",null,"subscores"),table=node("table",null,"detail-table");
   for(const score of r.sub_scores||[]){
     const sg=["A","B","C","D","F"].includes(score.grade)?score.grade:"F";
-    const chip=node("span",null,"chip");chip.append(node("span",score.label,"ck"),node("span",sg,"cg fg-"+sg),node("span",String(Math.round(score.score))));chips.append(chip);
+    const chip=node("span",null,"chip");chip.append(node("span",score.label,"ck"),node("span",sg,"cg fg-"+sg),node("span",String(Math.floor(score.score))));chips.append(chip);
     const row=node("tr"),explanation=node("td",score.explanation);explanation.append(node("div",score.metric||"","m"));
     row.append(node("td",sg,"g fg-"+sg),node("td",score.label,"k"),explanation);table.append(row);
   }
