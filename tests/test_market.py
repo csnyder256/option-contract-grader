@@ -60,6 +60,76 @@ def test_load_universe_parses(tmp_path, monkeypatch):
     assert market.load_universe() == ["AAA", "BBB", "CCC"]  # upper, deduped, no comments
 
 
+def _isolate_universe(tmp_path, monkeypatch, legacy_syms=("AAA", "BBB")):
+    """Point the universe at tmp files and clear both caches.
+
+    ``optionable.txt`` deliberately does not exist yet: the point of these
+    tests is what happens when it appears (or is rewritten) *after* import.
+    ``UNIVERSE_FILE`` is left alone on purpose -- it is the module's own
+    ``None``-means-resolve-it-now default that is under test.
+    """
+    legacy = tmp_path / "sp500_etfs.txt"
+    legacy.write_text("\n".join(legacy_syms) + "\n", encoding="utf-8")
+    generated = tmp_path / "optionable.txt"
+    monkeypatch.setattr(market, "LEGACY_UNIVERSE_FILE", legacy)
+    monkeypatch.setattr(market, "OPTIONABLE_FILE", generated)
+    monkeypatch.setattr(market, "_universe_cache", None)
+    monkeypatch.setattr(market, "_universe_memo", None, raising=False)
+    return legacy, generated
+
+
+def test_universe_picks_up_a_generated_list_without_a_restart(tmp_path, monkeypatch):
+    """Running the generator against a live server must change what it scans.
+
+    The preferred file was resolved once, at import, so
+    ``scripts/update_universe.py`` had no effect on a running process: the
+    sweep kept scanning the 565-name fallback and ``GET /health`` -- the
+    documented way to confirm which list is loaded -- kept reporting that count
+    as if it were current. A silent coverage shortfall is exactly the failure
+    this repo keeps closing.
+    """
+    _, generated = _isolate_universe(tmp_path, monkeypatch)
+
+    assert market.load_universe() == ["AAA", "BBB"]          # the fallback
+    assert market.universe_info()["full_optionable_list"] is False
+    assert market.universe_info()["file"] == "sp500_etfs.txt"
+
+    generated.write_text("# generated\nCCC\nDDD\nEEE\n", encoding="utf-8")
+
+    assert market.load_universe() == ["CCC", "DDD", "EEE"]   # picked up, no restart
+    assert market.universe_size() == 3
+    info = market.universe_info()
+    assert info["file"] == "optionable.txt"
+    assert info["full_optionable_list"] is True
+    assert info["file_missing"] is False
+
+
+def test_universe_rereads_a_regenerated_file(tmp_path, monkeypatch):
+    """A universe that changes on disk is re-read, not served from the old memo."""
+    _, generated = _isolate_universe(tmp_path, monkeypatch)
+    generated.write_text("AAA\n", encoding="utf-8")
+    assert market.load_universe() == ["AAA"]
+
+    generated.write_text("AAA\nBBB\n", encoding="utf-8")
+    assert market.load_universe() == ["AAA", "BBB"]
+
+
+def test_universe_info_names_a_missing_file(tmp_path, monkeypatch):
+    """No list at all is reported as such, instead of a bare zero."""
+    legacy, generated = _isolate_universe(tmp_path, monkeypatch)
+    legacy.unlink()
+    info = market.universe_info()
+    assert info["size"] == 0
+    assert info["file_missing"] is True
+
+
+def test_universe_cache_override_still_wins(monkeypatch):
+    """An explicitly injected list is authoritative (unchanged contract)."""
+    monkeypatch.setattr(market, "_universe_cache", ["ZZZ"])
+    assert market.load_universe() == ["ZZZ"]
+    assert market.universe_size() == 1
+
+
 def test_store_underlying_cache_roundtrip():
     s = Store(":memory:")
     assert s.get_underlying("AAA") is None

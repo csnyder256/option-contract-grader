@@ -79,6 +79,40 @@ def test_health_reports_provider_and_universe():
     assert body["universe_size"] > 0
 
 
+def test_health_names_the_universe_list_it_loaded(tmp_path, monkeypatch):
+    """`/health` says *which* list is loaded, and follows it when it changes.
+
+    `universe_size` alone cannot answer that: the reader has to know what the
+    counts should be, and `MAX_UNIVERSE` caps the count, so a capped full list
+    and an uncapped fallback can read alike. The app resolves the file per
+    call, so a list generated on the running host shows up here without a
+    restart -- which is what the README's regeneration step promises.
+    """
+    import app.market as market
+
+    legacy = tmp_path / "sp500_etfs.txt"
+    legacy.write_text("AAA\nBBB\n", encoding="utf-8")
+    generated = tmp_path / "optionable.txt"          # not generated yet
+    monkeypatch.setattr(market, "LEGACY_UNIVERSE_FILE", legacy)
+    monkeypatch.setattr(market, "OPTIONABLE_FILE", generated)
+    monkeypatch.setattr(market, "_universe_cache", None)
+    monkeypatch.setattr(market, "_universe_memo", None, raising=False)
+
+    with TestClient(app) as c:
+        body = c.get("/health").json()
+    assert body["universe_size"] == 2
+    assert body["universe"]["file"] == "sp500_etfs.txt"
+    assert body["universe"]["full_optionable_list"] is False
+
+    generated.write_text("CCC\nDDD\nEEE\nFFF\n", encoding="utf-8")
+
+    with TestClient(app) as c:
+        body = c.get("/health").json()
+    assert body["universe_size"] == 4
+    assert body["universe"]["file"] == "optionable.txt"
+    assert body["universe"]["full_optionable_list"] is True
+
+
 # --- /key ------------------------------------------------------------------ #
 
 def test_key_exposes_grade_and_subscore_labels():

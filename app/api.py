@@ -336,6 +336,7 @@ def health():
         "realtime_note": realtime_note,
         "risk_free_rate": settings.risk_free_rate,
         "universe_size": market.universe_size(),
+        "universe": market.universe_info(),
     }
 
 

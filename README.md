@@ -110,7 +110,7 @@ Dependency flow is one-way: frontend to `api.py`, `api.py` to `scanner.py` and `
 | `app/providers/cboe.py` | 366 | Pure parser functions plus a thin networked class. OCC symbol parsing, symbol-spelling fallbacks, in-process chain cache, and a non-200 / non-JSON guard on every fetch. |
 | `app/providers/tradier.py` | 362 | Same pure-parser / client split, but a different retry policy (429 only). Batched quotes, scalar-vs-array normalization, client-side rate limiting at 118 requests/minute against a 120 cap, and the same `FeedError` contract as CBOE. |
 | `app/scanner.py` | 131 | The shared per-symbol core described above. |
-| `app/market.py` | 373 | Universe loading, the locked background state machine, and `run_market_sweep` as a testable function taking a progress callback and injectable providers. |
+| `app/market.py` | 373 | Universe loading (the file is resolved per read, so a regenerated universe needs no restart), the locked background state machine, and `run_market_sweep` as a testable function taking a progress callback and injectable providers. |
 | `app/store.py` | 175 | SQLite: `iv_snapshots` and `underlying_cache`, an in-place `ALTER TABLE` migration, `check_same_thread=False` plus an `RLock` so sweep workers share one connection, and a future-date guard on IV history reads. |
 | `scripts/update_universe.py` | 172 | Regenerates the optionable universe from the OCC directory, with fallbacks. |
 | `frontend/` | 558 | Two tabs, live progress bar, client-side re-sort by any sub-score. Zero JS dependencies. |
@@ -140,7 +140,7 @@ The two live providers do not retry identically, but as of this pass they **fail
 | POST | `/scan` | One ticker plus filters, returns a graded, ranked list |
 | POST | `/market/scan` | Starts a background sweep, returns immediately |
 | GET | `/market/status` | Polls progress, phase, notes, and Top-N results |
-| GET | `/health` | Config sanity, provider in use, universe size |
+| GET | `/health` | Config sanity, provider in use, and the universe list actually loaded |
 | GET | `/key` | Grade legend and sub-score labels |
 | GET | `/` | The static frontend |
 
@@ -248,6 +248,8 @@ python scripts/update_universe.py
 
 This writes `app/universe/optionable.txt` from the OCC Directory of Listed Products, falling back to the Cboe symbol reference and then to the curated list. It refuses to overwrite if it assembles fewer than 565 symbols or fewer than 400 S&P names, so a half-failed download cannot silently shrink the screener's coverage. Cash-settled index roots are dropped, symbols are deduped on a separator-stripped key, and the output is ordered ETFs, then S&P 500, then the alphabetical long tail. That ordering is what makes the sweep's scan budget mean "the most liquid slice."
 
+Which file is in use is resolved on **every read**, not once at import, so a running server picks the generated list up on its next sweep — no restart. `GET /health` says which one it took: `universe.file` names the file, `universe.full_optionable_list` is `true` when the generated full list is loaded, `universe.file_missing` flags a list that is not on disk, and `universe.capped_by_max_universe` says whether `MAX_UNIVERSE` trimmed the count. `universe_size` is unchanged.
+
 ---
 
 ## Configuration
@@ -307,7 +309,7 @@ This repo is a sanitized copy of a working local install. The exclusions are enf
 - **`data/options.db`**, the accumulated SQLite state (IV snapshots plus the price/HV cache). Only public market data, no account or position information, but it is runtime output. `data/.gitkeep` ships so the path exists; the schema is created on first run.
 - **`app/universe/optionable.txt`**, the roughly 6,000-name generated list. The OCC and Cboe source files carry redistribution restrictions, which `scripts/update_universe.py` acknowledges in its own docstring, so the generator ships and the generated artifact does not.
 
-**That last one changes behavior on a fresh clone.** `app/market.py` prefers `optionable.txt` and falls back to `app/universe/sp500_etfs.txt`, a curated 565-symbol list (62 ETFs plus 503 S&P names). So out of the box the market sweep covers 565 names. Run `python scripts/update_universe.py` once to get the full optionable universe. `GET /health` reports `universe_size` so you can tell which list is loaded.
+**That last one changes behavior on a fresh clone.** `app/market.py` prefers `optionable.txt` and falls back to `app/universe/sp500_etfs.txt`, a curated 565-symbol list (62 ETFs plus 503 S&P names). So out of the box the market sweep covers 565 names. Run `python scripts/update_universe.py` once to get the full optionable universe; the running server picks it up without a restart, and `GET /health` reports both `universe_size` and a `universe` block naming the file it actually loaded.
 
 ---
 
@@ -330,6 +332,7 @@ Roadmap, in rough priority order: an American-option pricer (binomial or Bjerksu
 
 ## Resolved
 
+- **The universe the app reports is the universe it will scan.** The preferred list (`optionable.txt`, else the curated fallback) was resolved **once, at import**, so running `scripts/update_universe.py` against a live server changed nothing: the sweep kept scanning the 565-name fallback and `GET /health` — the documented way to confirm which list is loaded — kept reporting that count as if it were current. A silent coverage shortfall, in the repo that keeps closing that class. Resolution now happens per read, memoised on the file's identity (`path`, `mtime_ns`, `size`, so a rewrite inside one filesystem timestamp tick still re-reads), which means a regenerated universe takes effect on the next sweep with no restart. A bare count could not answer the question anyway: `MAX_UNIVERSE` caps it, so a capped full list and an uncapped fallback read alike. `/health` now also returns a `universe` block naming the file, whether it is the generated full list, whether the file is missing, and whether the count was capped; `universe_size` is unchanged. `test_universe_picks_up_a_generated_list_without_a_restart`, `test_universe_rereads_a_regenerated_file` and `test_health_names_the_universe_list_it_loaded` pin it (they fail against the pre-fix source, which reads the real fallback and ignores the generated file).
 - **Feed failures have a consistent HTTP error contract.** Non-200 status, an unparseable body, and JSON non-object bodies raise a typed `FeedError`, which `/scan` maps to HTTP 502 with the reason. Previously, Tradier could expose untyped `HTTPStatusError` or `ValueError` failures, and Yahoo chart decoding could expose `ValueError`. The first version of this branch also collapsed Tradier non-object JSON to an empty object; the follow-up corrects that regression. A healthy empty chain remains HTTP 200. These HTTP outcomes are covered through the real app with `TestClient`.
 - **IV history cannot read the future.** `get_iv_history` and `snapshot_count` exclude rows dated after today, so a phantom future snapshot can no longer move IV rank or percentile.
 - **An impossible filter is rejected, not answered.** Inverted expiration, premium, price, and DTE ranges, and a whitespace-only ticker, return `422` with the specific mismatch instead of an empty result set.
